@@ -10,7 +10,6 @@ beforeEach(() => {
   _clearInstanceCache()
   StorageAdapterFactory._reset()
   adapter = new MemoryStorageAdapter()
-  import.meta.vi?.spyOn?.(StorageAdapterFactory, 'get')
   // Use a single shared adapter so we can inspect raw values
   const original = StorageAdapterFactory.get.bind(StorageAdapterFactory)
   StorageAdapterFactory.get = () => adapter

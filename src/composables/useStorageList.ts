@@ -3,11 +3,11 @@ import { useStorage } from './useStorage'
 import type { StorageOptions, StorageError } from '../core/types'
 import type { Ref } from 'vue'
 
-export interface UseStorageListOptions<T> extends Omit<StorageOptions<T[]>, 'defaultValue'> {
+export interface UseStorageListOptions<T extends object> extends Omit<StorageOptions<T[]>, 'defaultValue'> {
   keyField?: keyof T & string
 }
 
-export interface UseStorageListReturn<T> {
+export interface UseStorageListReturn<T extends object> {
   items: Ref<T[]>
   isReady: Ref<boolean>
   error: Ref<StorageError | null>
@@ -20,7 +20,7 @@ export interface UseStorageListReturn<T> {
   set(items: T[]): void
 }
 
-export function useStorageList<T extends Record<string, unknown>>(
+export function useStorageList<T extends object>(
   key: string,
   options: UseStorageListOptions<T> = {},
 ): UseStorageListReturn<T> {
@@ -31,22 +31,26 @@ export function useStorageList<T extends Record<string, unknown>>(
     defaultValue: [],
   })
 
+  function getKey(item: T): unknown {
+    return (item as Record<string, unknown>)[keyField as string]
+  }
+
   function add(item: T): void {
     items.value = [...items.value, item]
   }
 
   function update(id: unknown, patch: Partial<T>): void {
     items.value = items.value.map((item) =>
-      item[keyField] === id ? { ...item, ...patch } : item,
+      getKey(item) === id ? { ...item, ...patch } : item,
     )
   }
 
   function remove(id: unknown): void {
-    items.value = items.value.filter((item) => item[keyField] !== id)
+    items.value = items.value.filter((item) => getKey(item) !== id)
   }
 
   function find(id: unknown): ComputedRef<T | undefined> {
-    return computed(() => items.value.find((item) => item[keyField] === id))
+    return computed(() => items.value.find((item) => getKey(item) === id))
   }
 
   function findAll(predicate: (item: T) => boolean): ComputedRef<T[]> {
