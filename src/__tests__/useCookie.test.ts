@@ -125,7 +125,7 @@ describe('useCookie', () => {
     ref.value = 'v'
     await nextTick()
     restore()
-    const last = writes.at(-1) ?? ''
+    const last = writes[writes.length - 1] ?? ''
     expect(last.toLowerCase()).toContain('samesite=strict')
     expect(last.toLowerCase()).toContain('secure')
   })

@@ -14,7 +14,7 @@ export default defineNuxtModule<ModuleOptions>({
   defaults: {
     autoImports: true,
   },
-  setup(options) {
+  setup(options: ModuleOptions) {
     const resolver = createResolver(import.meta.url)
 
     if (options.autoImports) {
