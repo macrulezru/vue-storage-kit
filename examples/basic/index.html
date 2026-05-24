@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>vue-storage-kit — basic examples</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "vue": "https://cdn.jsdelivr.net/npm/vue@3/dist/vue.esm-browser.js"
+    }
+  }
+  </script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    section { margin-bottom: 2rem; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem 1.5rem; }
+    h2 { margin-top: 0; color: #1e293b; }
+    pre { background: #f1f5f9; padding: 0.75rem; border-radius: 6px; font-size: 0.85rem; }
+    button { margin-right: 0.5rem; padding: 0.4rem 0.8rem; cursor: pointer; }
+    input { padding: 0.4rem; border: 1px solid #cbd5e1; border-radius: 4px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <!-- ── 1. localStorage ─────────────────────────────────────────── -->
+  <section>
+    <h2>1. localStorage</h2>
+    <p>Value: <strong>{{ theme }}</strong></p>
+    <button @click="theme = 'light'">Light</button>
+    <button @click="theme = 'dark'">Dark</button>
+    <button @click="theme = 'system'">System</button>
+    <p><small>Refresh the page — the value persists.</small></p>
+  </section>
+
+  <!-- ── 2. TTL ──────────────────────────────────────────────────── -->
+  <section>
+    <h2>2. TTL (5 seconds)</h2>
+    <p>Counter: <strong>{{ counter }}</strong></p>
+    <button @click="counter++">Increment</button>
+    <p><small>The value is removed from storage after 5 s.</small></p>
+    <p v-if="counterExpiry">Expires at: {{ counterExpiry?.toLocaleTimeString() }}</p>
+  </section>
+
+  <!-- ── 3. Migration ────────────────────────────────────────────── -->
+  <section>
+    <h2>3. Schema Migration (v1 → v2)</h2>
+    <pre>{{ JSON.stringify(settings, null, 2) }}</pre>
+    <button @click="seedV1">Seed v1 data in localStorage</button>
+    <p><small>Seed, then reload — migration runs automatically on init.</small></p>
+  </section>
+
+  <!-- ── 4. Cookie ──────────────────────────────────────────────── -->
+  <section>
+    <h2>4. Cookie</h2>
+    <p>Language: <strong>{{ lang }}</strong></p>
+    <button @click="lang = 'en'">EN</button>
+    <button @click="lang = 'fr'">FR</button>
+    <button @click="lang = 'de'">DE</button>
+  </section>
+
+  <!-- ── 5. Export / Import ──────────────────────────────────────── -->
+  <section>
+    <h2>5. Export / Import storage</h2>
+    <pre>{{ snapshot }}</pre>
+    <button @click="doExport">Export localStorage</button>
+    <button @click="doImport">Import sample data</button>
+    <button @click="doClear">Clear with prefix "kit:"</button>
+  </section>
+</div>
+
+<script type="module">
+import { createApp, ref, computed } from 'vue'
+
+// In a real project: import from 'vue-storage-kit'
+// Here we inline minimal implementations for the demo.
+
+// ── tiny in-memory storage shim for the demo ──────────────────────────────────
+function makeLocalStorageBacked(key, opts = {}) {
+  const raw = localStorage.getItem(key)
+  const defaultValue = opts.defaultValue
+  const v = ref(raw !== null ? (() => { try { return JSON.parse(raw).d !== undefined ? JSON.parse(JSON.parse(raw).d) : defaultValue } catch { return defaultValue } })() : defaultValue)
+  const expiryRef = ref(null)
+
+  const save = () => {
+    const ttl = opts.ttl
+    const exp = ttl ? Date.now() + ttl * 1000 : null
+    expiryRef.value = exp ? new Date(exp) : null
+    localStorage.setItem(key, JSON.stringify({ v: 1, d: JSON.stringify(v.value), exp, ts: Date.now() }))
+  }
+
+  // watch-like: use a Proxy to detect sets
+  return { value: new Proxy(v, {
+    get(t, p) { return Reflect.get(t, p) },
+    set(t, p, val) {
+      const r = Reflect.set(t, p, val)
+      if (p === 'value') save()
+      return r
+    }
+  }), expiry: computed(() => expiryRef.value) }
+}
+
+function makeCookieBacked(name, opts = {}) {
+  const read = () => {
+    const match = document.cookie.split('; ').find(c => c.startsWith(name + '='))
+    if (!match) return opts.defaultValue
+    try { return JSON.parse(decodeURIComponent(match.split('=')[1])) } catch { return opts.defaultValue }
+  }
+  const v = ref(read())
+  return new Proxy(v, {
+    get(t, p) { return Reflect.get(t, p) },
+    set(t, p, val) {
+      const r = Reflect.set(t, p, val)
+      if (p === 'value') {
+        const days = opts.expires ?? 30
+        const exp = new Date(Date.now() + days * 864e5).toUTCString()
+        document.cookie = `${name}=${encodeURIComponent(JSON.stringify(val))}; expires=${exp}; path=/`
+      }
+      return r
+    }
+  })
+}
+
+createApp({
+  setup() {
+    // 1. localStorage
+    const { value: theme } = makeLocalStorageBacked('kit:theme', { defaultValue: 'system' })
+
+    // 2. TTL
+    const { value: counter, expiry: counterExpiry } = makeLocalStorageBacked('kit:counter', {
+      defaultValue: 0, ttl: 5
+    })
+
+    // 3. Migration — read raw settings, apply migration if v1
+    function readSettings() {
+      const raw = localStorage.getItem('kit:settings')
+      if (!raw) return { locale: 'en', theme: 'light' }
+      const env = JSON.parse(raw)
+      if (env.v === 1) {
+        const old = JSON.parse(env.d)
+        // migrate: darkMode → theme
+        return { locale: old.locale ?? 'en', theme: old.darkMode ? 'dark' : 'light' }
+      }
+      return JSON.parse(env.d)
+    }
+    const settings = ref(readSettings())
+
+    function seedV1() {
+      localStorage.setItem('kit:settings', JSON.stringify({
+        v: 1, d: JSON.stringify({ locale: 'fr', darkMode: true }), exp: null, ts: Date.now()
+      }))
+      alert('v1 data seeded — reload the page to see the migration')
+    }
+
+    // 4. Cookie
+    const lang = makeCookieBacked('kit-lang', { defaultValue: 'en', expires: 7 })
+
+    // 5. Export/Import
+    const snapshot = ref('{}')
+    function doExport() {
+      const result = {}
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k) result[k] = localStorage.getItem(k)
+      }
+      snapshot.value = JSON.stringify(result, null, 2)
+    }
+    function doImport() {
+      localStorage.setItem('kit:imported', JSON.stringify({ v: 1, d: '"hello from import"', exp: null, ts: Date.now() }))
+      doExport()
+    }
+    function doClear() {
+      const keys = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k && k.startsWith('kit:')) keys.push(k)
+      }
+      keys.forEach(k => localStorage.removeItem(k))
+      snapshot.value = '{}'
+    }
+
+    return { theme, counter, counterExpiry, settings, seedV1, lang, snapshot, doExport, doImport, doClear }
+  }
+}).mount('#app')
+</script>
+</body>
+</html>
