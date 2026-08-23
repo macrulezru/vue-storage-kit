@@ -338,6 +338,49 @@ describe('StorageEngine — history / undo / redo', () => {
     expect(engine.getSnapshot().canUndo).toBe(false)
     engine.dispose()
   })
+
+  it('does not let a mutated defaultValue bleed into history', async () => {
+    // A caller-owned object handed in as defaultValue, mutated *after*
+    // construction but *before* the first setValue() — lastCommitted must
+    // already be an independent clone at construction time, not just from
+    // the first applyValue() onward.
+    const shared = { count: 0 }
+    const engine = new StorageEngine('k', { defaultValue: shared, target: 'memory', history: 5 })
+    await engine.ready
+
+    shared.count = 999 // mutated after construction, before any setValue()
+
+    engine.setValue({ count: 1 })
+    engine.undo()
+    expect(engine.getSnapshot().value).toEqual({ count: 0 })
+    engine.dispose()
+  })
+
+  it('clones a Vue reactive Proxy value for history instead of sharing the live reference', async () => {
+    // structuredClone() throws DataCloneError on a Vue reactive Proxy — the
+    // exact shape an object value arrives in from the Vue composable's deep
+    // ref. cloneValue() must fall back to a working clone (not the same
+    // reference) in that case.
+    const { reactive } = await import('vue')
+    const engine = new StorageEngine('k', {
+      defaultValue: reactive({ count: 0 }),
+      target: 'memory',
+      history: 5,
+    })
+    await engine.ready
+
+    const proxied = reactive({ count: 1 })
+    engine.setValue(proxied)
+    // Mutate the same reactive object the caller is still holding — must
+    // not retroactively change what undo()/redo() restore.
+    proxied.count = 2
+
+    engine.undo()
+    expect(engine.getSnapshot().value).toEqual({ count: 0 })
+    engine.redo()
+    expect(engine.getSnapshot().value).toEqual({ count: 1 })
+    engine.dispose()
+  })
 })
 
 describe('StorageEngine — quota-exceeded recovery', () => {
@@ -448,6 +491,87 @@ describe('StorageEngine — events', () => {
     await engine.ready
 
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'expire' }))
+    engine.dispose()
+  })
+})
+
+describe('StorageEngine — sync update racing the initial read', () => {
+  class MockBroadcastChannel {
+    private static channels = new Map<string, Set<MockBroadcastChannel>>()
+    private listeners: ((e: MessageEvent) => void)[] = []
+
+    constructor(public readonly name: string) {
+      const set = MockBroadcastChannel.channels.get(name) ?? new Set()
+      set.add(this)
+      MockBroadcastChannel.channels.set(name, set)
+    }
+
+    postMessage(): void {
+      // Not exercised by this test — the engine only needs to receive.
+    }
+
+    static deliverTo(channelName: string, data: unknown): void {
+      const peers = MockBroadcastChannel.channels.get(channelName) ?? new Set()
+      for (const peer of peers) {
+        peer.listeners.forEach((fn) => fn({ data } as MessageEvent))
+      }
+    }
+
+    addEventListener(_: string, fn: (e: MessageEvent) => void): void {
+      this.listeners.push(fn)
+    }
+
+    removeEventListener(_: string, fn: (e: MessageEvent) => void): void {
+      this.listeners = this.listeners.filter((l) => l !== fn)
+    }
+
+    close(): void {
+      MockBroadcastChannel.channels.get(this.name)?.delete(this)
+    }
+
+    static reset(): void {
+      MockBroadcastChannel.channels.clear()
+    }
+  }
+
+  class DelayedAdapter extends MemoryStorageAdapter {
+    constructor(private readonly delayMs: number) {
+      super()
+    }
+    async getItem(key: string): Promise<string | null> {
+      await new Promise((r) => setTimeout(r, this.delayMs))
+      return super.getItem(key)
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('BroadcastChannel', MockBroadcastChannel)
+    MockBroadcastChannel.reset()
+  })
+
+  it('preserves a cross-tab sync update that lands while the initial read is still in flight', async () => {
+    const delayedAdapter = new DelayedAdapter(50)
+    vi.spyOn(StorageAdapterFactory, 'get').mockReturnValue(delayedAdapter)
+
+    const engine = new StorageEngine('sync-race-key', {
+      defaultValue: 'default',
+      target: 'memory',
+      sync: { channel: 'race-channel' },
+    })
+
+    // Delivered while the 50ms-delayed initial read is still in flight.
+    await new Promise((r) => setTimeout(r, 10))
+    const envelope = JSON.stringify({ v: 1, d: '"from-other-tab"', exp: null, ts: Date.now() })
+    MockBroadcastChannel.deliverTo('race-channel', {
+      key: 'sync-race-key',
+      value: envelope,
+      ts: Date.now(),
+    })
+
+    await engine.ready
+    // The initial read (resolving after the sync update) must not clobber
+    // the value the sync update already applied.
+    expect(engine.getSnapshot().value).toBe('from-other-tab')
     engine.dispose()
   })
 })

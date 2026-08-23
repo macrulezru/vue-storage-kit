@@ -38,18 +38,6 @@ type SigningModule = typeof import('../crypto/StorageSigning')
 type CompressModule = typeof import('../compress/Compression')
 type TabSyncModule = typeof import('../sync/TabSync')
 
-// Used to keep the history/redo stacks independent of whatever object the
-// caller (e.g. a Vue deep-reactive ref) may go on mutating in place after
-// handing it to setValue() — see the `lastCommitted` field below.
-function cloneValue<T>(value: T): T {
-  if (value === null || typeof value !== 'object') return value
-  try {
-    return structuredClone(value)
-  } catch {
-    return value
-  }
-}
-
 /**
  * Framework-agnostic reactive-storage engine — the shared core behind
  * useStorage() on both the Vue and React sides. No Vue or React import
@@ -164,7 +152,12 @@ export class StorageEngine<T> {
     this.onExpireCb = options.onExpire
     this.onMigrateCb = options.onMigrate
     this.defaultValue = options.defaultValue
-    this.lastCommitted = this.defaultValue
+    // Cloned up front (not just from the first applyValue() onward) — a
+    // caller-owned defaultValue object mutated in place before the first
+    // setValue() must not bleed into what gets pushed onto historyStack,
+    // same reasoning as cloneValue()'s use everywhere else.
+    this.lastCommitted =
+      this.historyLimit > 0 ? this.cloneValue(this.defaultValue) : this.defaultValue
 
     this.adapter = StorageAdapterFactory.get(this.target)
 
@@ -314,13 +307,43 @@ export class StorageEngine<T> {
 
   private applyValue(newValue: T): void {
     if (this.historyLimit > 0) {
-      this.lastCommitted = cloneValue(newValue)
+      this.lastCommitted = this.cloneValue(newValue)
     }
     this.patchSnapshot({
       value: newValue,
       canUndo: this.historyStack.length > 0,
       canRedo: this.redoStack.length > 0,
     })
+  }
+
+  // Keeps the history/redo stacks independent of whatever object the caller
+  // (e.g. a Vue deep-reactive ref) may go on mutating in place after handing
+  // it to setValue() — see `lastCommitted`'s declaration.
+  private cloneValue(value: T): T {
+    if (value === null || typeof value !== 'object') return value
+    try {
+      return structuredClone(value)
+    } catch {
+      // structuredClone throws DataCloneError on a Vue reactive Proxy (the
+      // exact shape an object/array value arrives in from the Vue
+      // composable) — verified: it's not just a theoretical edge case, it's
+      // the primary real-world shape this runs on. Fall back to the
+      // serialize/deserialize round-trip the value must already survive to
+      // be persisted at all (JSON.stringify/parse — the default and most
+      // common serializer — handles a Proxy transparently, unlike
+      // structuredClone).
+      try {
+        return this.serializer.deserialize(this.serializer.serialize(value))
+      } catch (e) {
+        // Truly uncloneable by any means this engine has available. Report
+        // it rather than silently handing back the caller's live reference,
+        // which would silently reintroduce the exact history-bleeding bug
+        // this method exists to prevent — the caller at least learns history
+        // may be unreliable for this value instead of being lied to.
+        this.reportError({ type: 'parse-error', key: this.key, raw: String(e) })
+        return value
+      }
+    }
   }
 
   // ─── Internal: read pipeline ────────────────────────────────────────────────
@@ -532,17 +555,24 @@ export class StorageEngine<T> {
   }
 
   private async writeToStorage(data: T): Promise<void> {
-    // Wait for encrypt/compress/sign modules to finish loading before this
-    // write touches this.cryptoMod/compressMod/signingMod — otherwise a
-    // write triggered synchronously right after construction (before the
-    // dynamic import()s in loadModules() settle) would silently skip
-    // encryption/compression/signing instead of waiting for it.
-    await this.modulesReady
-    // Chained onto writeChain so two overlapping writes (or a write racing
-    // a remove()) can't finish out of order — see writeChain's declaration.
-    const task = this.writeChain.then(() =>
-      this.writeToStorageInternal(data, this.version, true),
-    )
+    // Reserve this write's writeChain slot *synchronously*, before awaiting
+    // anything — remove() also reserves its slot synchronously (it doesn't
+    // wait on modulesReady at all), so if the await here came first, a
+    // remove() issued while an earlier write was still stuck waiting on
+    // modulesReady (e.g. the very first write, with the crypto module still
+    // loading) could read the pre-reservation writeChain and slot its
+    // removeItem() in ahead of that earlier write — reversing the effective
+    // order despite being issued later. Waiting on modulesReady now happens
+    // *inside* the chained callback instead, after the slot is claimed.
+    const task = this.writeChain.then(async () => {
+      // Wait for encrypt/compress/sign modules to finish loading before
+      // this write touches this.cryptoMod/compressMod/signingMod —
+      // otherwise a write triggered synchronously right after construction
+      // (before the dynamic import()s in loadModules() settle) would
+      // silently skip encryption/compression/signing instead of waiting.
+      await this.modulesReady
+      return this.writeToStorageInternal(data, this.version, true)
+    })
     this.writeChain = task.catch(() => {})
     return task
   }
@@ -641,6 +671,11 @@ export class StorageEngine<T> {
           const envelope = JSON.parse(dataRaw) as StorageEnvelope
           if (!TTLManager.isExpired(envelope.exp)) {
             const data = this.serializer.deserialize(envelope.d)
+            // A cross-tab update is just as authoritative as a local
+            // setValue() — if it lands while the initial read is still in
+            // flight, the initial read must not overwrite it once it
+            // resolves (same reasoning as hasExternalWrite's declaration).
+            this.hasExternalWrite = true
             this.applyValue(data)
             this.patchSnapshot({ expiry: envelope.exp ? new Date(envelope.exp) : null })
             this.emitEvent('sync-received')
