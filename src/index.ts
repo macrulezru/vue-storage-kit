@@ -31,9 +31,15 @@ export type { UseBroadcastChannelReturn } from './composables/useBroadcastChanne
 export { VueStoragePlugin } from './plugin'
 export type { VueStoragePluginOptions } from './plugin'
 
+// Devtools integration lives at the `vue-storage-kit/devtools` entry point
+// (not re-exported here) so @vue/devtools-api never ends up in the main
+// bundle — VueStoragePlugin.install() already loads it dynamically outside
+// production; import from the subpath directly only if you skip the plugin.
+
 // Adapters (for advanced use)
 export { StorageAdapterFactory } from './adapters/StorageAdapterFactory'
 export { MemoryStorageAdapter } from './adapters/MemoryStorageAdapter'
+export { IndexedDBStorageAdapter } from './adapters/IndexedDBStorageAdapter'
 export { IndexedDBAdapter } from './adapters/IndexedDBAdapter'
 export type { IDBIndexDefinition as IDBIndex } from './adapters/IndexedDBAdapter'
 
@@ -61,6 +67,9 @@ export type {
   Serializer,
   Migration,
   EncryptOptions,
+  SignOptions,
+  CompressOptions,
+  CompressionAlgorithm,
   SyncOptions,
   CookieOptions,
 } from './core/types'

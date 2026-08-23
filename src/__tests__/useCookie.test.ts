@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { effectScope, nextTick } from 'vue'
 import { useCookie } from '../composables/useCookie'
 
@@ -66,6 +66,15 @@ describe('useCookie', () => {
   })
 
   it('reads an existing cookie on mount', () => {
+    document.cookie = 'lang=%22fr%22; path=/'
+    const ref = withScope(() => useCookie('lang', { defaultValue: 'en' }))
+    expect(ref.value).toBe('fr')
+  })
+
+  it('does not throw when another cookie on the same document has a malformed percent-escape', () => {
+    // decodeURIComponent() throws URIError on a stray "%" — a neighboring
+    // cookie's malformed value must not take down parsing of this one.
+    document.cookie = 'other=%; path=/'
     document.cookie = 'lang=%22fr%22; path=/'
     const ref = withScope(() => useCookie('lang', { defaultValue: 'en' }))
     expect(ref.value).toBe('fr')

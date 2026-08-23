@@ -26,25 +26,32 @@ function fmt(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
-function doExport() {
-  const snap = exportStorage('local', 'demo:')
+async function doExport() {
+  const snap = await exportStorage('local', 'demo:')
   snapshot.value = JSON.stringify(snap, null, 2)
   statusMsg.value = `Exported ${Object.keys(snap).length} key(s)`
 }
 
-function doImport() {
+async function doImport() {
+  let snap: Record<string, string>
   try {
-    const snap = JSON.parse(importText.value || snapshot.value) as Record<string, string>
-    importStorage(snap, 'local', { overwrite: true })
-    statusMsg.value = `Imported ${Object.keys(snap).length} key(s)`
-    window.location.reload()
+    snap = JSON.parse(importText.value || snapshot.value) as Record<string, string>
   } catch {
     statusMsg.value = 'Error: invalid JSON'
+    return
+  }
+
+  try {
+    await importStorage(snap, 'local', { overwrite: true })
+    statusMsg.value = `Imported ${Object.keys(snap).length} key(s)`
+    window.location.reload()
+  } catch (e) {
+    statusMsg.value = `Error: import failed — ${e}`
   }
 }
 
-function doClear() {
-  clearStorage('local', 'demo:')
+async function doClear() {
+  await clearStorage('local', 'demo:')
   snapshot.value = ''
   statusMsg.value = 'Cleared all demo: keys'
   window.location.reload()

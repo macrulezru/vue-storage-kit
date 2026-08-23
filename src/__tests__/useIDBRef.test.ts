@@ -43,21 +43,20 @@ describe('useIDBRef', () => {
     const adapter = new IndexedDBAdapter('db', 'store') as unknown as { _store: Map<string, unknown> }
     ;(adapter as unknown as { get: ReturnType<typeof vi.fn> }).get = vi.fn(async () => 'stored')
 
-    const { value, isReady } = withScope(() => useIDBRef('db', 'store', 'k', 'default'))
+    const { isReady } = withScope(() => useIDBRef('db', 'store', 'k', 'default'))
     await new Promise((r) => setTimeout(r, 10))
     await nextTick()
     expect(isReady.value).toBe(true)
   })
 
   it('writes to IDB when value changes after ready', async () => {
-    const instances: ReturnType<typeof vi.fn>[] = []
     const { IndexedDBAdapter: MockCls } = await import('../adapters/IndexedDBAdapter') as unknown as {
       IndexedDBAdapter: ReturnType<typeof vi.fn>
     }
     const mockInstance = { get: vi.fn(async () => null), set: vi.fn(async () => {}), close: vi.fn() }
     MockCls.mockImplementationOnce(() => mockInstance)
 
-    const { value, isReady } = withScope(() => useIDBRef('db', 'store', 'k', ''))
+    const { value } = withScope(() => useIDBRef('db', 'store', 'k', ''))
     await new Promise((r) => setTimeout(r, 10))
     await nextTick()
     await nextTick()

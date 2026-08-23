@@ -46,8 +46,8 @@ describe('TabSync', () => {
   })
 
   it('delivers a broadcast message to a subscriber on another instance', async () => {
-    const sender = new TabSync({ channel: 'test' })
-    const receiver = new TabSync({ channel: 'test' })
+    const sender = new TabSync({ channel: 'test', debounce: 0 })
+    const receiver = new TabSync({ channel: 'test', debounce: 0 })
     await sender.start()
     await receiver.start()
 
@@ -64,7 +64,7 @@ describe('TabSync', () => {
   })
 
   it('does not deliver its own broadcast back to itself', async () => {
-    const sync = new TabSync({ channel: 'self' })
+    const sync = new TabSync({ channel: 'self', debounce: 0 })
     await sync.start()
 
     const received = vi.fn()
@@ -78,8 +78,8 @@ describe('TabSync', () => {
   })
 
   it('last-write-wins: newer timestamp replaces older', async () => {
-    const sender = new TabSync({ channel: 'lww' })
-    const receiver = new TabSync({ channel: 'lww' })
+    const sender = new TabSync({ channel: 'lww', debounce: 0 })
+    const receiver = new TabSync({ channel: 'lww', debounce: 0 })
     await sender.start()
     await receiver.start()
 
@@ -98,8 +98,8 @@ describe('TabSync', () => {
   })
 
   it('ignores a message with an older timestamp', async () => {
-    const sender = new TabSync({ channel: 'stale' })
-    const receiver = new TabSync({ channel: 'stale' })
+    const sender = new TabSync({ channel: 'stale', debounce: 0 })
+    const receiver = new TabSync({ channel: 'stale', debounce: 0 })
     await sender.start()
     await receiver.start()
 
@@ -123,8 +123,8 @@ describe('TabSync', () => {
   })
 
   it('unsubscribe removes the listener', async () => {
-    const sender = new TabSync({ channel: 'unsub' })
-    const receiver = new TabSync({ channel: 'unsub' })
+    const sender = new TabSync({ channel: 'unsub', debounce: 0 })
+    const receiver = new TabSync({ channel: 'unsub', debounce: 0 })
     await sender.start()
     await receiver.start()
 
@@ -140,12 +140,61 @@ describe('TabSync', () => {
     receiver.stop()
   })
 
+  it('debounces rapid broadcasts for the same key into a single message', async () => {
+    vi.useFakeTimers()
+    try {
+      const sender = new TabSync({ channel: 'debounced', debounce: 50 })
+      const receiver = new TabSync({ channel: 'debounced', debounce: 50 })
+      await sender.start()
+      await receiver.start()
+
+      const received: string[] = []
+      receiver.subscribe('k', (v) => received.push(v))
+
+      sender.broadcast('k', 'v1', 100)
+      sender.broadcast('k', 'v2', 200)
+      sender.broadcast('k', 'v3', 300)
+
+      // Nothing sent yet — still within the debounce window.
+      await vi.advanceTimersByTimeAsync(30)
+      expect(received).toHaveLength(0)
+
+      // Window elapses — only the latest value is delivered, once.
+      await vi.advanceTimersByTimeAsync(30)
+      expect(received).toEqual(['v3'])
+
+      sender.stop()
+      receiver.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sends immediately when debounce is 0', async () => {
+    const sender = new TabSync({ channel: 'no-debounce', debounce: 0 })
+    const receiver = new TabSync({ channel: 'no-debounce', debounce: 0 })
+    await sender.start()
+    await receiver.start()
+
+    const received: string[] = []
+    receiver.subscribe('k', (v) => received.push(v))
+
+    sender.broadcast('k', 'v1', 100)
+    sender.broadcast('k', 'v2', 200)
+
+    await new Promise((r) => setTimeout(r, 5))
+    expect(received).toEqual(['v1', 'v2'])
+
+    sender.stop()
+    receiver.stop()
+  })
+
   it('stop() closes the channel', async () => {
-    const sync = new TabSync({ channel: 'stop-test' })
+    const sync = new TabSync({ channel: 'stop-test', debounce: 0 })
     await sync.start()
     sync.stop()
     // After stop, sending should not reach receivers
-    const receiver = new TabSync({ channel: 'stop-test' })
+    const receiver = new TabSync({ channel: 'stop-test', debounce: 0 })
     await receiver.start()
     const received = vi.fn()
     receiver.subscribe('k', received)

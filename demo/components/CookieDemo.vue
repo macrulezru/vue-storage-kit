@@ -31,6 +31,15 @@ const allCookies = computed(() =>
       It uses the same JSON serializer as <code>useStorage</code> and supports all standard cookie options.
     </p>
 
+    <div class="info">
+      This demo is a plain client-side Vite app, so <code>useCookie</code> here is the client-only
+      version exported from the package root. Inside a <strong>Nuxt</strong> app with the
+      <code>vue-storage-kit/nuxt</code> module registered, the same auto-imported <code>useCookie()</code>
+      call resolves to an SSR-aware version instead — it reads/writes through the H3
+      request/response on the server, so <code>httpOnly</code> actually works and SSR output
+      reflects the real cookie value instead of always falling back to <code>defaultValue</code>.
+    </div>
+
     <div class="grid2">
       <!-- prefs cookie -->
       <div class="card">

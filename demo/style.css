@@ -76,6 +76,23 @@ body {
 .sidebar nav button:hover { background: var(--sidebar-hover); color: #e2e8f0; }
 .sidebar nav button.active { background: var(--sidebar-active); color: #fff; font-weight: 600; }
 
+.sidebar-note {
+  margin-top: auto;
+  padding: 0.85rem 1rem 1.1rem;
+  border-top: 1px solid #334155;
+  color: #64748b;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.sidebar-note code {
+  background: #0f172a;
+  color: #93c5fd;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+}
+
 .content {
   flex: 1;
   padding: 2rem 2.5rem;

@@ -1,7 +1,44 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { compress, decompress, isCompressed, CompressAdapter } from 'vue-storage-kit/compress'
-import { MemoryStorageAdapter } from 'vue-storage-kit'
+import { MemoryStorageAdapter, useStorage } from 'vue-storage-kit'
+
+// ── useStorage({ compress: true }) — built into the main read/write pipeline ──
+const { value: compressedNote, isReady: compressedNoteReady } = useStorage('demo:compressed-note', {
+  defaultValue: '',
+  target: 'local',
+  compress: true,
+})
+// localStorage.getItem() isn't a Vue-reactive read, so a plain computed()
+// over it would only ever evaluate once and never update as the note is
+// edited. Track it as a ref, refreshed after each write settles.
+const rawCompressedNote = ref<string | null>(localStorage.getItem('demo:compressed-note'))
+
+// useStorage() writes asynchronously (module load + adapter.setItem) and
+// doesn't expose a public "write completed" signal — poll for the change
+// instead of guessing a fixed delay, so this is exact regardless of how
+// long that write actually takes.
+async function waitForCompressedNoteWrite(previous: string | null, timeoutMs = 2000): Promise<string | null> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const current = localStorage.getItem('demo:compressed-note')
+    if (current !== previous) return current
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  return localStorage.getItem('demo:compressed-note')
+}
+
+watch(compressedNote, async () => {
+  rawCompressedNote.value = await waitForCompressedNoteWrite(rawCompressedNote.value)
+})
+const compressedNoteSize = computed(() =>
+  rawCompressedNote.value ? new TextEncoder().encode(rawCompressedNote.value).length : 0,
+)
+const compressedNotePlainSize = computed(() => new TextEncoder().encode(compressedNote.value).length)
+
+function fillCompressedNote() {
+  compressedNote.value = SAMPLE.repeat(4)
+}
 
 const SAMPLE = `Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
 incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
@@ -44,7 +81,7 @@ const adapterDecoded = ref('')
 
 async function saveCompressed() {
   await adapter.setCompressed(adapterKey, adapterInput.value)
-  adapterRaw.value = baseAdapter.getItem(adapterKey) ?? ''
+  adapterRaw.value = (await baseAdapter.getItem(adapterKey)) ?? ''
 }
 
 async function readDecompressed() {
@@ -61,6 +98,30 @@ async function readDecompressed() {
       (gzip, deflate, deflate-raw). Zero extra dependencies.
       <code>CompressAdapter</code> wraps any <code>StorageAdapter</code>.
     </p>
+
+    <!-- useStorage({ compress: true }) -->
+    <div class="card">
+      <div class="card-title">useStorage({ compress: true }) — built into the pipeline</div>
+      <div v-if="!compressedNoteReady" style="color:var(--muted)">Loading…</div>
+      <template v-else>
+        <textarea v-model="compressedNote" rows="4" placeholder="Type something, or fill with sample text…" />
+        <div class="row" style="margin-top:0.5rem">
+          <button class="ghost" @click="fillCompressedNote">Fill with repetitive sample text</button>
+          <span style="margin-left:auto;font-size:0.82rem;color:var(--muted)" v-if="rawCompressedNote">
+            plain {{ compressedNotePlainSize }} B → stored {{ compressedNoteSize }} B
+          </span>
+        </div>
+        <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">
+          Same option shape as <code>encrypt</code> — no separate adapter wrapper needed.
+          Combine both: <code>{ compress: true, encrypt: { password } }</code> compresses
+          the plaintext, then encrypts (compressing ciphertext gains nothing).
+        </p>
+      </template>
+      <pre style="margin-top:0.5rem">const { value } = useStorage('note', {
+  defaultValue: '',
+  compress: true,
+})</pre>
+    </div>
 
     <!-- standalone compress/decompress -->
     <div class="card">

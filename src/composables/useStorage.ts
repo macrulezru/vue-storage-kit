@@ -2,26 +2,29 @@ import {
   ref,
   computed,
   watch,
-  nextTick,
   effectScope,
   getCurrentScope,
   onScopeDispose,
   type Ref,
   type ComputedRef,
 } from 'vue'
-import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
-import { SchemaManager } from '../core/SchemaManager'
-import { TTLManager } from '../core/TTLManager'
-import { createJSONSerializer } from '../core/serializer'
-import type { StorageOptions, StorageError, StorageEnvelope, EncryptOptions } from '../core/types'
+import { acquireEngine, releaseEngine, cacheKey } from '../engine/engineCache'
+import { getGlobalOptions } from '../plugin'
+import type { StorageOptions, StorageError, Serializer } from '../core/types'
 
 export interface UseStorageReturn<T> {
   value: Ref<T>
   isReady: Ref<boolean>
   error: Ref<StorageError | null>
   expiry: ComputedRef<Date | null>
+  canUndo: ComputedRef<boolean>
+  canRedo: ComputedRef<boolean>
   remove(): void
   refresh(): Promise<void>
+  /** Navigate to the previous value. Requires `history` to be set; a no-op otherwise. */
+  undo(): void
+  /** Re-apply a value undone via undo(). Requires `history` to be set; a no-op otherwise. */
+  redo(): void
 }
 
 // ─── Typed key descriptor produced by defineStorageKey() ─────────────────────
@@ -38,24 +41,25 @@ export function defineStorageKey<T>(
   return { _key: key, _options: options }
 }
 
-// ─── Shared instance cache ────────────────────────────────────────────────────
+// ─── Shared Vue-reactive-wrapper cache ────────────────────────────────────────
 // Multiple calls to useStorage with the same key+target return the same
 // reactive Ref. A detached effectScope keeps watchers alive independently of
-// any component scope. Reference counting tears down the scope when the last
-// consumer is disposed.
+// any component scope. Reference counting tears down the scope (and releases
+// the underlying, framework-agnostic StorageEngine — see src/engine/ — via
+// engineCache) when the last consumer is disposed.
+//
+// This is a Vue-specific cache layer on top of the shared engine cache: it
+// exists so that two Vue components asking for the same key+target get the
+// literal same `Ref` object, not just the same underlying engine.
 
-interface CacheEntry {
+interface WrapperCacheEntry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   result: UseStorageReturn<any>
   refCount: number
   scope: ReturnType<typeof effectScope>
 }
 
-const instanceCache = new Map<string, CacheEntry>()
-
-function cacheKey(key: string, target: string): string {
-  return `${target}:${key}`
-}
+const wrapperCache = new Map<string, WrapperCacheEntry>()
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -65,14 +69,13 @@ export function useStorage<T>(
   keyOrDef: string | StorageKeyDef<T>,
   options?: StorageOptions<T>,
 ): UseStorageReturn<T> {
-  const resolvedKey = typeof keyOrDef === 'string' ? keyOrDef : keyOrDef._key
-  const resolvedOpts =
-    typeof keyOrDef === 'string' ? options! : keyOrDef._options
-  const target = resolvedOpts.target ?? 'local'
-  const ck = cacheKey(resolvedKey, target)
+  const rawKey = typeof keyOrDef === 'string' ? keyOrDef : keyOrDef._key
+  const rawOpts = typeof keyOrDef === 'string' ? options! : keyOrDef._options
+  const { key, options: resolvedOpts } = resolveGlobalOptions(rawKey, rawOpts)
+  const ck = cacheKey(key, resolvedOpts.target ?? 'local')
 
   // Return cached instance if available
-  const existing = instanceCache.get(ck)
+  const existing = wrapperCache.get(ck)
   if (existing) {
     existing.refCount++
     _registerDispose(ck)
@@ -83,268 +86,161 @@ export function useStorage<T>(
   const scope = effectScope(true)
   let result!: UseStorageReturn<T>
   scope.run(() => {
-    result = _useStorageImpl(resolvedKey, resolvedOpts)
+    result = _wrapEngine(key, resolvedOpts)
   })
 
-  instanceCache.set(ck, { result, refCount: 1, scope })
+  wrapperCache.set(ck, { result, refCount: 1, scope })
   _registerDispose(ck)
   return result
+}
+
+// VueStoragePlugin's global options (prefix/defaultTarget/defaultSerializer/
+// defaultEncrypt/onError), resolved against this call's own options. Kept
+// here (not in the framework-agnostic engine) because VueStoragePlugin is a
+// Vue-specific concept.
+function resolveGlobalOptions<T>(
+  rawKey: string,
+  options: StorageOptions<T>,
+): { key: string; options: StorageOptions<T> } {
+  const globalOpts = getGlobalOptions()
+  const target = options.target ?? globalOpts.defaultTarget ?? 'local'
+  const key = globalOpts.prefix ? globalOpts.prefix + rawKey : rawKey
+  const serializer =
+    options.serializer ?? (globalOpts.defaultSerializer as unknown as Serializer<T> | undefined)
+  const encrypt =
+    options.encrypt === true
+      ? (globalOpts.defaultEncrypt ?? true)
+      : options.encrypt
+        ? { ...globalOpts.defaultEncrypt, ...options.encrypt }
+        : options.encrypt
+
+  const localOnError = options.onError
+  const onError = globalOpts.onError
+    ? (err: StorageError) => {
+        localOnError?.(err)
+        // VueStoragePlugin's onError runs in addition to (not instead of) a
+        // per-call handler — useful for app-wide logging/telemetry.
+        if (globalOpts.onError !== localOnError) globalOpts.onError!(err)
+      }
+    : localOnError
+
+  return { key, options: { ...options, target, serializer, encrypt, onError } }
 }
 
 function _registerDispose(ck: string): void {
   if (!getCurrentScope()) return
   onScopeDispose(() => {
-    const entry = instanceCache.get(ck)
+    const entry = wrapperCache.get(ck)
     if (!entry) return
     entry.refCount--
     if (entry.refCount <= 0) {
       entry.scope.stop()
-      instanceCache.delete(ck)
+      wrapperCache.delete(ck)
     }
   })
 }
 
 // Exposed for testing only
 export function _clearInstanceCache(): void {
-  instanceCache.forEach((e) => e.scope.stop())
-  instanceCache.clear()
+  wrapperCache.forEach((e) => e.scope.stop())
+  wrapperCache.clear()
 }
 
-// ─── Implementation ───────────────────────────────────────────────────────────
+export interface StorageInstanceInfo {
+  cacheKey: string
+  target: string
+  key: string
+  refCount: number
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: UseStorageReturn<any>
+}
 
-type CryptoModule = typeof import('../crypto/StorageEncryption')
-type TabSyncModule = typeof import('../sync/TabSync')
+// Exposed for the devtools inspector — a read-only snapshot of every live
+// useStorage() instance, keyed by "target:key".
+export function _getInstanceCache(): StorageInstanceInfo[] {
+  return [...wrapperCache.entries()].map(([ck, entry]) => {
+    const sep = ck.indexOf(':')
+    return {
+      cacheKey: ck,
+      target: ck.slice(0, sep),
+      key: ck.slice(sep + 1),
+      refCount: entry.refCount,
+      result: entry.result,
+    }
+  })
+}
 
-function _useStorageImpl<T>(key: string, options: StorageOptions<T>): UseStorageReturn<T> {
-  const {
-    target = 'local',
-    serializer = createJSONSerializer<T>(),
-    ttl,
-    version = 1,
-    migrations = [],
-    encrypt = false,
-    sync = false,
-    onError,
-    onExpire,
-    onMigrate,
-    defaultValue,
-  } = options
+// ─── Implementation: thin Vue-reactive wrapper over StorageEngine ─────────────
 
-  const adapter = StorageAdapterFactory.get(target)
-  const value = ref<T>(defaultValue) as Ref<T>
-  const isReady = ref(false)
-  const error = ref<StorageError | null>(null)
-  const expiryDate = ref<Date | null>(null)
+function _wrapEngine<T>(key: string, options: StorageOptions<T>): UseStorageReturn<T> {
+  const { engine, cacheKey: engineCk } = acquireEngine<T>(key, options)
 
-  const encryptOpts: EncryptOptions | null =
-    encrypt === false ? null : encrypt === true ? ({} as EncryptOptions) : encrypt
+  const snap = engine.getSnapshot()
+  const value = ref<T>(snap.value) as Ref<T>
+  const isReady = ref(snap.isReady)
+  const error = ref<StorageError | null>(snap.error)
+  const expiryDate = ref<Date | null>(snap.expiry)
+  const canUndoRef = ref(snap.canUndo)
+  const canRedoRef = ref(snap.canRedo)
+  const expiry = computed<Date | null>(() => expiryDate.value)
+  const canUndo = computed<boolean>(() => canUndoRef.value)
+  const canRedo = computed<boolean>(() => canRedoRef.value)
 
-  let cryptoMod: CryptoModule | null = null
-  let tabSync: InstanceType<TabSyncModule['TabSync']> | null = null
+  // Guards the watcher below from re-broadcasting a value the engine itself
+  // just applied (initial read, cross-tab sync, undo/redo, migration). Reset
+  // synchronously rather than via nextTick(): with flush: 'sync' the watcher
+  // below runs synchronously, nested inside the `value.value = s.value`
+  // assignment itself, so by the time control returns to the next line the
+  // (re-entrant, skipped) watcher call has already happened. Resetting
+  // synchronously — instead of leaving the flag up for a whole microtask —
+  // matters when the engine's own setValue() echoes back through this same
+  // subscriber (see below): a deferred reset would still be "up" for a
+  // second, unrelated user edit landing later in the same synchronous tick,
+  // silently dropping it.
   let _skipWrite = false
 
-  const expiry = computed<Date | null>(() => expiryDate.value)
-
-  function reportError(err: StorageError): void {
-    error.value = err
-    onError?.(err)
-  }
-
-  function setValueSilently(val: T): void {
+  const unsubscribe = engine.subscribe(() => {
+    const s = engine.getSnapshot()
     _skipWrite = true
-    value.value = val
-    nextTick(() => {
-      _skipWrite = false
-    })
-  }
-
-  async function readFromStorage(): Promise<T> {
-    let raw = adapter.getItem(key)
-    if (raw === null) return defaultValue
-
-    if (encryptOpts && cryptoMod) {
-      try {
-        raw = await cryptoMod.decrypt(raw, encryptOpts)
-      } catch (e) {
-        reportError({ type: 'crypto-error', operation: 'decrypt', error: e as Error })
-        return defaultValue
-      }
-    }
-
-    let envelope: StorageEnvelope
-    try {
-      envelope = JSON.parse(raw) as StorageEnvelope
-    } catch {
-      reportError({ type: 'parse-error', key, raw })
-      return defaultValue
-    }
-
-    if (TTLManager.isExpired(envelope.exp)) {
-      adapter.removeItem(key)
-      expiryDate.value = null
-      onExpire?.(key)
-      return defaultValue
-    }
-
-    expiryDate.value = envelope.exp ? new Date(envelope.exp) : null
-
-    if (envelope.v !== version) {
-      let deserialized: unknown
-      try {
-        deserialized = serializer.deserialize(envelope.d)
-      } catch {
-        reportError({ type: 'parse-error', key, raw: envelope.d })
-        return defaultValue
-      }
-
-      const result = SchemaManager.migrate<T>(
-        { v: envelope.v, d: deserialized },
-        version,
-        migrations,
-        onMigrate,
-        reportError,
-      )
-      if (!result) return defaultValue
-
-      await writeToStorageInternal(result.data, result.version, false)
-      return result.data
-    }
-
-    try {
-      return serializer.deserialize(envelope.d)
-    } catch {
-      reportError({ type: 'parse-error', key, raw: envelope.d })
-      return defaultValue
-    }
-  }
-
-  async function writeToStorageInternal(
-    data: T,
-    schemaVersion: number,
-    broadcast: boolean,
-  ): Promise<void> {
-    const exp = TTLManager.computeExp(ttl)
-    const ts = Date.now()
-    const envelope: StorageEnvelope = {
-      v: schemaVersion,
-      d: serializer.serialize(data),
-      exp,
-      ts,
-    }
-
-    let raw = JSON.stringify(envelope)
-
-    if (encryptOpts && cryptoMod) {
-      try {
-        raw = await cryptoMod.encrypt(raw, encryptOpts)
-      } catch (e) {
-        reportError({ type: 'crypto-error', operation: 'encrypt', error: e as Error })
-        return
-      }
-    }
-
-    try {
-      adapter.setItem(key, raw)
-      expiryDate.value = exp ? new Date(exp) : null
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
-        reportError({ type: 'quota-exceeded', key })
-        return
-      }
-      throw e
-    }
-
-    if (broadcast && tabSync) {
-      tabSync.broadcast(key, raw, ts)
-    }
-  }
-
-  async function writeToStorage(data: T): Promise<void> {
-    return writeToStorageInternal(data, version, true)
-  }
-
-  async function init(): Promise<void> {
-    if (encryptOpts) {
-      cryptoMod = await import('../crypto/StorageEncryption')
-    }
-
-    if (sync) {
-      const syncOpts = sync === true ? {} : sync
-      const { TabSync } = await import('../sync/TabSync')
-      tabSync = new TabSync(syncOpts)
-      await tabSync.start()
-
-      tabSync.subscribe(key, async (raw) => {
-        let dataRaw = raw
-        if (encryptOpts && cryptoMod) {
-          try {
-            dataRaw = await cryptoMod!.decrypt(raw, encryptOpts)
-          } catch {
-            return
-          }
-        }
-        try {
-          const envelope = JSON.parse(dataRaw) as StorageEnvelope
-          if (!TTLManager.isExpired(envelope.exp)) {
-            const data = serializer.deserialize(envelope.d)
-            setValueSilently(data)
-            expiryDate.value = envelope.exp ? new Date(envelope.exp) : null
-          }
-        } catch {
-          // ignore malformed cross-tab messages
-        }
-      })
-    }
-
-    const initial = await readFromStorage()
-    setValueSilently(initial)
-    isReady.value = true
-  }
+    value.value = s.value
+    _skipWrite = false
+    isReady.value = s.isReady
+    error.value = s.error
+    expiryDate.value = s.expiry
+    canUndoRef.value = s.canUndo
+    canRedoRef.value = s.canRedo
+  })
 
   const stopWatch = watch(
     value,
-    async (newVal) => {
+    (newVal) => {
       if (_skipWrite) return
-      await writeToStorage(newVal)
+      engine.setValue(newVal)
     },
     { deep: true, flush: 'sync' },
   )
-
-  init().catch((e: unknown) => {
-    reportError({ type: 'parse-error', key, raw: String(e) })
-    isReady.value = true
-  })
 
   // Cleanup is handled by the detached scope owner (_clearInstanceCache / refCount)
   if (getCurrentScope()) {
     onScopeDispose(() => {
       stopWatch()
-      tabSync?.stop()
+      unsubscribe()
+      releaseEngine(engineCk)
     })
   }
 
-  function remove(): void {
-    adapter.removeItem(key)
-    expiryDate.value = null
-    if (tabSync) {
-      const ts = Date.now()
-      const tombstone: StorageEnvelope = {
-        v: version,
-        d: serializer.serialize(defaultValue),
-        exp: null,
-        ts,
-      }
-      tabSync.broadcast(key, JSON.stringify(tombstone), ts)
-    }
-    setValueSilently(defaultValue)
+  return {
+    value,
+    isReady,
+    error,
+    expiry,
+    canUndo,
+    canRedo,
+    remove: () => engine.remove(),
+    refresh: () => engine.refresh(),
+    undo: () => engine.undo(),
+    redo: () => engine.redo(),
   }
-
-  async function refresh(): Promise<void> {
-    const newVal = await readFromStorage()
-    setValueSilently(newVal)
-  }
-
-  return { value, isReady, error, expiry, remove, refresh }
 }
 
 // ─── Shortcuts ────────────────────────────────────────────────────────────────

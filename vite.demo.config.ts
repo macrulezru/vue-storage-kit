@@ -11,6 +11,7 @@ export default defineConfig({
       { find: 'vue-storage-kit/compress', replacement: resolve(__dirname, 'src/compress/index.ts') },
       { find: 'vue-storage-kit/crypto',   replacement: resolve(__dirname, 'src/crypto/index.ts') },
       { find: 'vue-storage-kit/sync',     replacement: resolve(__dirname, 'src/sync/index.ts') },
+      { find: 'vue-storage-kit/devtools', replacement: resolve(__dirname, 'src/devtools/index.ts') },
       { find: 'vue-storage-kit',          replacement: resolve(__dirname, 'src/index.ts') },
     ],
   },

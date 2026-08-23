@@ -17,6 +17,8 @@ export class TabSync {
   private leaderElection: LeaderElection | null = null
   private readonly channelName: string
   private readonly debounce: number
+  private pendingMessages = new Map<string, SyncMessage>()
+  private pendingTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(private readonly opts: SyncOptions = {}) {
     this.channelName = opts.channel ?? 'vue-storage-kit'
@@ -48,7 +50,26 @@ export class TabSync {
     if (!this.channel) return
     this.localTimestamps.set(key, ts)
     const msg: SyncMessage = { key, value, ts }
-    this.channel.postMessage(msg)
+
+    if (this.debounce <= 0) {
+      this.channel.postMessage(msg)
+      return
+    }
+
+    // Coalesce rapid successive broadcasts for the same key into a single
+    // postMessage carrying the latest value, sent after `debounce` ms of
+    // quiet — this is what SyncOptions.debounce documents.
+    this.pendingMessages.set(key, msg)
+    const existingTimer = this.pendingTimers.get(key)
+    if (existingTimer) clearTimeout(existingTimer)
+
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(key)
+      const pending = this.pendingMessages.get(key)
+      this.pendingMessages.delete(key)
+      if (pending) this.channel?.postMessage(pending)
+    }, this.debounce)
+    this.pendingTimers.set(key, timer)
   }
 
   subscribe(key: string, callback: MessageListener): void {
@@ -60,6 +81,19 @@ export class TabSync {
   }
 
   stop(): void {
+    for (const timer of this.pendingTimers.values()) clearTimeout(timer)
+    this.pendingTimers.clear()
+
+    // Flush any messages still waiting out their debounce window instead of
+    // dropping them — otherwise the last update before a dispose/unmount
+    // would silently never reach other tabs.
+    if (this.channel) {
+      for (const pending of this.pendingMessages.values()) {
+        this.channel.postMessage(pending)
+      }
+    }
+    this.pendingMessages.clear()
+
     this.channel?.close()
     this.channel = null
     if (this.usingFallback) {
