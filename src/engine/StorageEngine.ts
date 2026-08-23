@@ -459,7 +459,14 @@ export class StorageEngine<T> {
       )
       if (!result) return this.defaultValue
 
-      await this.writeToStorageInternal(result.data, result.version, false, Date.now())
+      // Preserves the source envelope's own ts rather than stamping a fresh
+      // Date.now() — this write-back is a schema migration, not a new value
+      // being decided. Using "now" here would inflate lastAppliedTs with a
+      // timestamp that has nothing to do with the data's actual recency,
+      // which (with sync enabled) could make a merely-just-migrated stale
+      // value outrank — and cause the rejection of — a genuinely newer
+      // cross-tab message arriving shortly after.
+      await this.writeToStorageInternal(result.data, result.version, false, envelope.ts)
       return result.data
     }
 

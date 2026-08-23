@@ -158,6 +158,33 @@ describe('StorageEngine — migrations', () => {
     expect(onMigrate).toHaveBeenCalledWith(1, 2)
     engine.dispose()
   })
+
+  it('preserves the source envelope ts on the migration write-back, rather than stamping a fresh one', async () => {
+    // A schema migration isn't a new value being decided — using Date.now()
+    // for the rewritten envelope's ts would inflate lastAppliedTs with a
+    // timestamp unrelated to the data's actual recency, which (with sync
+    // enabled) could make a merely-just-migrated stale value outrank a
+    // genuinely newer cross-tab message arriving shortly after.
+    const originalTs = Date.now() - 100_000
+    await adapter.setItem(
+      'settings',
+      JSON.stringify({ v: 1, d: JSON.stringify({ darkMode: true }), exp: null, ts: originalTs }),
+    )
+    const engine = new StorageEngine<{ theme?: string }>('settings', {
+      defaultValue: {},
+      target: 'memory',
+      version: 2,
+      migrations: [
+        { version: 2, up: (d) => ({ theme: (d as { darkMode?: boolean }).darkMode ? 'dark' : 'light' }) },
+      ],
+    })
+    await engine.ready
+
+    const raw = await adapter.getItem('settings')
+    const meta = TTLManager.unwrapMeta(raw!)
+    expect(meta?.ts).toBe(originalTs)
+    engine.dispose()
+  })
 })
 
 describe('StorageEngine — encrypt / compress / sign', () => {
@@ -710,17 +737,25 @@ describe('StorageEngine — sync update racing the initial read', () => {
       JSON.stringify({ v: 1, d: '"from-disk"', exp: null, ts: 1000 }),
     )
 
+    // Capture the engine's own subscriber callback and invoke it directly,
+    // instead of routing messages through MockBroadcastChannel.deliverTo
+    // (which goes through TabSync's real onMessage first). TabSync tracks
+    // its own per-key localTimestamps and would, on its own, reject the
+    // second (intermediate) message below purely for having already seen
+    // ts: 2000 from the first — masking whether the *engine's*
+    // lastAppliedTs guard (the thing this test exists to verify) is what's
+    // actually doing the rejecting. Bypassing TabSync entirely isolates it.
+    let engineCallback!: (raw: string) => void
     let resolveSubscribed!: () => void
     const subscribed = new Promise<void>((resolve) => {
       resolveSubscribed = resolve
     })
-    const originalSubscribe = TabSync.prototype.subscribe
     vi.spyOn(TabSync.prototype, 'subscribe').mockImplementation(function (
       this: TabSync,
-      key,
+      _key,
       cb,
     ) {
-      originalSubscribe.call(this, key, cb)
+      engineCallback = cb
       resolveSubscribed()
     })
 
@@ -734,12 +769,8 @@ describe('StorageEngine — sync update racing the initial read', () => {
 
     // A newer message arrives and is accepted while the (gated) initial
     // read of the older on-disk value (ts: 1000) is still in flight.
-    const newer = JSON.stringify({ v: 1, d: '"newer-value"', exp: null, ts: 2000 })
-    MockBroadcastChannel.deliverTo('monotonic-race-channel', {
-      key: 'monotonic-race-key',
-      value: newer,
-      ts: 2000,
-    })
+    engineCallback(JSON.stringify({ v: 1, d: '"newer-value"', exp: null, ts: 2000 }))
+    await flush(10)
 
     // Now let the initial read (ts: 1000, older than what's already
     // applied) resolve. lastAppliedTs must stay at 2000, not regress to
@@ -751,13 +782,8 @@ describe('StorageEngine — sync update racing the initial read', () => {
 
     // An intermediate-stale message — older than what's already applied,
     // but newer than the disk value the read just (correctly) discarded —
-    // must still be rejected.
-    const intermediate = JSON.stringify({ v: 1, d: '"intermediate-stale"', exp: null, ts: 1500 })
-    MockBroadcastChannel.deliverTo('monotonic-race-channel', {
-      key: 'monotonic-race-key',
-      value: intermediate,
-      ts: 1500,
-    })
+    // must still be rejected, by the engine's own lastAppliedTs check.
+    engineCallback(JSON.stringify({ v: 1, d: '"intermediate-stale"', exp: null, ts: 1500 }))
     await flush(20)
 
     expect(engine.getSnapshot().value).toBe('newer-value')
