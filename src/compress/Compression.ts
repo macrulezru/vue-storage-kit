@@ -23,8 +23,19 @@ export async function compress(data: string, opts: CompressOptions = {}): Promis
   const algorithm = opts.algorithm ?? 'gzip'
   if (typeof CompressionStream === 'undefined') return data
 
+  let stream: CompressionStream
+  try {
+    stream = new CompressionStream(algorithm)
+  } catch {
+    // This runtime's CompressionStream doesn't support `algorithm` — e.g.
+    // 'deflate-raw' isn't recognized until Node 21+, even though
+    // CompressionStream itself exists from Node 18. Degrade the same way as
+    // CompressionStream being entirely unavailable: pass through
+    // uncompressed rather than throwing.
+    return data
+  }
+
   const encoded = new TextEncoder().encode(data)
-  const stream = new CompressionStream(algorithm)
   const writer = stream.writable.getWriter()
   writer.write(encoded)
   writer.close()
@@ -50,7 +61,21 @@ export async function decompress(data: string, _opts: CompressOptions = {}): Pro
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
 
-  const stream = new DecompressionStream(algorithm)
+  let stream: DecompressionStream
+  try {
+    stream = new DecompressionStream(algorithm)
+  } catch {
+    // This runtime can't decode `algorithm` (see compress()'s matching
+    // guard) — unlike compress(), there's no uncompressed fallback to hand
+    // back here; the data was genuinely compressed with it elsewhere.
+    // Returning it unchanged (instead of throwing an uncaught error deep in
+    // the read pipeline) means the caller's later JSON.parse() fails
+    // instead, which StorageEngine already treats as a reportable
+    // parse-error with a defaultValue fallback — the same outcome as any
+    // other undecodable envelope.
+    return data
+  }
+
   const writer = stream.writable.getWriter()
   writer.write(bytes)
   writer.close()

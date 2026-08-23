@@ -16,6 +16,21 @@ function flush(ms = 10): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+// Polls instead of sleeping a fixed duration — a write that involves a
+// crypto/compress/sign module isn't done until that module's dynamic
+// import() resolves, and a cold import (first use, mid-transform under the
+// full suite's load) can take longer than a fixed guess safely covers on
+// some runtimes (observed on Node 18 specifically).
+async function waitForWrite(getRaw: () => Promise<string | null>, timeoutMs = 3000): Promise<string> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const raw = await getRaw()
+    if (raw !== null) return raw
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  throw new Error('Timed out waiting for the write to land in storage')
+}
+
 describe('StorageEngine — basics', () => {
   it('starts with defaultValue and flips isReady after init', async () => {
     const engine = new StorageEngine('k', { defaultValue: 'x', target: 'memory' })
@@ -146,10 +161,8 @@ describe('StorageEngine — encrypt / compress / sign', () => {
     })
     await engine.ready
     engine.setValue('secret')
-    await flush(50)
-
-    const raw = await adapter.getItem('k')
-    expect(() => JSON.parse(raw!)).toThrow()
+    const raw = await waitForWrite(() => adapter.getItem('k'))
+    expect(() => JSON.parse(raw)).toThrow()
     engine.dispose()
 
     const engine2 = new StorageEngine('k', {
@@ -170,10 +183,7 @@ describe('StorageEngine — encrypt / compress / sign', () => {
     })
     await engine.ready
     engine.setValue('trust me')
-    await flush(50)
-
-    const raw = await adapter.getItem('k')
-    expect(raw).not.toBeNull()
+    const raw = await waitForWrite(() => adapter.getItem('k'))
     engine.dispose()
 
     // Correct password — reads through fine.
@@ -187,7 +197,7 @@ describe('StorageEngine — encrypt / compress / sign', () => {
     engine2.dispose()
 
     // Tampered value — signature-invalid, falls back to defaultValue.
-    await adapter.setItem('k', raw!.slice(0, -2) + 'xx')
+    await adapter.setItem('k', raw.slice(0, -2) + 'xx')
     const onError = vi.fn()
     const engine3 = new StorageEngine('k', {
       defaultValue: 'fallback',
@@ -212,7 +222,7 @@ describe('StorageEngine — encrypt / compress / sign', () => {
     const engine = new StorageEngine('k', opts)
     await engine.ready
     engine.setValue('x'.repeat(200))
-    await flush(50)
+    await waitForWrite(() => adapter.getItem('k'))
 
     const engine2 = new StorageEngine('k', opts)
     await engine2.ready
