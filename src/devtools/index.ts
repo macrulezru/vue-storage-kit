@@ -99,18 +99,38 @@ export function setupDevtools(app: App): void {
         })
       }
 
+      // Retained so setup() can be torn down cleanly — otherwise a second
+      // setupDevtools(app) call (e.g. across a Vite HMR remount) would
+      // attach a second logToTimeline listener to every already-live
+      // engine, doubling up timeline entries from then on.
+      const timelineDisposers = new Set<() => void>()
+
       function attachTimeline(info: EngineInstanceInfo): void {
-        info.engine.onEvent(logToTimeline)
+        timelineDisposers.add(info.engine.onEvent(logToTimeline))
       }
 
       getEngineCache().forEach(attachTimeline)
       const stopWatchingNewEngines = onEngineCreated(attachTimeline)
 
+      function cleanup(): void {
+        clearInterval(refreshTimer)
+        stopWatchingNewEngines()
+        timelineDisposers.forEach((stop) => stop())
+        timelineDisposers.clear()
+      }
+
+      // app.onUnmount() covers app.unmount() (SPA route/app teardown, HMR
+      // remounts) — beforeunload alone only fires on an actual tab
+      // close/reload, so it wouldn't run this cleanup in either of those
+      // cases. Both are wired up; cleanup() is idempotent either way.
+      // Guarded rather than called unconditionally: onUnmount() has been on
+      // Vue's App interface since 3.3, but this stays safe for any minimal
+      // app-like object a caller passes.
+      if (typeof app.onUnmount === 'function') {
+        app.onUnmount(cleanup)
+      }
       if (typeof window !== 'undefined') {
-        window.addEventListener('beforeunload', () => {
-          clearInterval(refreshTimer)
-          stopWatchingNewEngines()
-        })
+        window.addEventListener('beforeunload', cleanup)
       }
     },
   )

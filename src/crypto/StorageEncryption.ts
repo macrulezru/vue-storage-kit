@@ -1,4 +1,4 @@
-import type { EncryptOptions, StorageTarget } from '../core/types'
+import type { EncryptOptions, SignOptions, StorageTarget } from '../core/types'
 
 // Cache derived keys to avoid re-running PBKDF2 on every write.
 // Key: "password:iterations:base64(salt)" — unique per (password, salt) pair.
@@ -101,6 +101,16 @@ export async function reencrypt(
  * useStorage({ encrypt: oldOpts }) — reads the raw stored value, re-encrypts
  * it under `newOpts`, and writes it back. No-op if the key isn't present.
  *
+ * If the key was also stored with `sign` (signing wraps the outermost
+ * layer, so the raw value is `sign(encrypt(...))`, not just `encrypt(...)`),
+ * pass `signOpts` — the existing signature is verified and stripped before
+ * decrypting, and a fresh one is applied (with the same signing
+ * credentials) after re-encrypting. Omitting `signOpts` for a signed key
+ * would otherwise fail decrypt() with a confusing low-level error (the
+ * signature wrapper isn't valid base64 ciphertext) — a `sign`ed key
+ * *always* needs `signOpts` here, since the underlying `useStorage()` call
+ * it was written by set `sign`.
+ *
  * Run this once (e.g. on app start after prompting for a new password)
  * before switching `useStorage()` callers over to `newOpts`.
  */
@@ -109,11 +119,22 @@ export async function rotateEncryptedKey(
   key: string,
   oldOpts: EncryptOptions,
   newOpts: EncryptOptions,
+  signOpts?: SignOptions,
 ): Promise<void> {
   const { StorageAdapterFactory } = await import('../adapters/StorageAdapterFactory')
   const adapter = StorageAdapterFactory.get(target)
   const raw = await adapter.getItem(key)
   if (raw === null) return
+
+  if (signOpts) {
+    const { verify, sign } = await import('./StorageSigning')
+    const verified = await verify(raw, signOpts)
+    const rotated = await reencrypt(verified, oldOpts, newOpts)
+    const resigned = await sign(rotated, signOpts)
+    await adapter.setItem(key, resigned)
+    return
+  }
+
   const rotated = await reencrypt(raw, oldOpts, newOpts)
   await adapter.setItem(key, rotated)
 }

@@ -620,4 +620,37 @@ describe('StorageEngine — sync update racing the initial read', () => {
     expect(engine.getSnapshot().value).toBe('from-other-tab')
     engine.dispose()
   })
+
+  it('ignores a stale cross-tab message older than what was already loaded from storage', async () => {
+    // As if this engine had already read this "fresher" envelope on
+    // startup (ts = 1000) — TabSync's own per-key timestamp tracking never
+    // sees this, since it only tracks messages it has itself sent/received.
+    await adapter.setItem(
+      'stale-race-key',
+      JSON.stringify({ v: 1, d: '"fresh-from-disk"', exp: null, ts: 1000 }),
+    )
+
+    const engine = new StorageEngine('stale-race-key', {
+      defaultValue: 'default',
+      target: 'memory',
+      sync: { channel: 'stale-race-channel' },
+    })
+    await engine.ready
+    expect(engine.getSnapshot().value).toBe('fresh-from-disk')
+
+    // A stale broadcast from another tab (e.g. a debounced write queued
+    // before that tab had seen the newer value) arrives with an older ts.
+    // Without engine-level lastAppliedTs tracking this would incorrectly
+    // win, since TabSync's own staleness check has no prior ts for this key.
+    const staleEnvelope = JSON.stringify({ v: 1, d: '"stale-value"', exp: null, ts: 500 })
+    MockBroadcastChannel.deliverTo('stale-race-channel', {
+      key: 'stale-race-key',
+      value: staleEnvelope,
+      ts: 500,
+    })
+    await flush(20)
+
+    expect(engine.getSnapshot().value).toBe('fresh-from-disk')
+    engine.dispose()
+  })
 })

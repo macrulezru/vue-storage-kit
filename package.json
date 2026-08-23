@@ -90,6 +90,7 @@
     "verify-pack": "node scripts/verify-pack.mjs",
     "prepublishOnly": "npm run build && npm run typecheck && npm run verify-pack",
     "lint": "eslint . --ext .vue,.js,.jsx,.ts,.tsx --fix",
+    "lint:check": "eslint . --ext .vue,.js,.jsx,.ts,.tsx",
     "format": "prettier --write src/",
     "lint:style": "stylelint \"src/**/*.{css,scss,vue}\""
   },

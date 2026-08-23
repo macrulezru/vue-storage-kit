@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { compress, decompress, isCompressed, CompressAdapter } from 'vue-storage-kit/compress'
 import { MemoryStorageAdapter, useStorage } from 'vue-storage-kit'
 
@@ -9,7 +9,17 @@ const { value: compressedNote, isReady: compressedNoteReady } = useStorage('demo
   target: 'local',
   compress: true,
 })
-const rawCompressedNote = computed(() => localStorage.getItem('demo:compressed-note'))
+// localStorage.getItem() isn't a Vue-reactive read, so a plain computed()
+// over it would only ever evaluate once and never update as the note is
+// edited. Track it as a ref, refreshed after each write settles.
+const rawCompressedNote = ref<string | null>(localStorage.getItem('demo:compressed-note'))
+watch(compressedNote, async () => {
+  // useStorage() writes asynchronously (module load + adapter.setItem) —
+  // there's no public "write completed" signal to await here, so give it a
+  // moment before re-reading the persisted raw value.
+  await new Promise((r) => setTimeout(r, 50))
+  rawCompressedNote.value = localStorage.getItem('demo:compressed-note')
+})
 const compressedNoteSize = computed(() =>
   rawCompressedNote.value ? new TextEncoder().encode(rawCompressedNote.value).length : 0,
 )

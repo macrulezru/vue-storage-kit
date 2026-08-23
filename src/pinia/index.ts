@@ -45,6 +45,14 @@ export function createPiniaPersist(opts: PiniaPersistOptions = {}) {
 
     const adapter = StorageAdapterFactory.get(target)
 
+    // Set synchronously the moment a persist is triggered (before restore's
+    // adapter.getItem() resolves) — if the store was mutated (and thus
+    // persisted) while restore was still in flight, that mutation is
+    // strictly newer than whatever's in storage; applying the restored data
+    // on top of it afterwards would silently revert it. Same reasoning as
+    // StorageEngine's hasExternalWrite.
+    let hasExternalWrite = false
+
     // Restore (async — the adapter may be backed by IndexedDB). State reflects
     // defaultValue-initialized values until this resolves, same tradeoff as
     // useStorage()'s isReady.
@@ -56,7 +64,7 @@ export function createPiniaPersist(opts: PiniaPersistOptions = {}) {
         onError?.({ type: 'read-failed', key, error: e as Error })
         return
       }
-      if (raw !== null) {
+      if (raw !== null && !hasExternalWrite) {
         beforeRestore?.(ctx)
         try {
           const stored = serializer.deserialize(raw) as Record<string, unknown>
@@ -70,6 +78,7 @@ export function createPiniaPersist(opts: PiniaPersistOptions = {}) {
 
     // Persist on every state change
     ctx.store.$subscribe((_: SubscriptionCallbackMutation<StateTree>, state: StateTree) => {
+      hasExternalWrite = true
       const slice = filterState(state as Record<string, unknown>, pick, omit)
       // Wrapped in an async IIFE (rather than `adapter.setItem(...).catch()`)
       // so a synchronous throw from a non-conforming adapter is caught too,

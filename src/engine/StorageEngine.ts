@@ -107,6 +107,17 @@ export class StorageEngine<T> {
   // thrown write doesn't poison every write queued after it.
   private writeChain: Promise<void> = Promise.resolve()
 
+  // The envelope `ts` of the most recent value this engine has applied,
+  // from *any* source — a local write, a disk read (initial load or
+  // refresh()), or an accepted cross-tab message. TabSync tracks its own
+  // per-key timestamps too, but only for messages it has itself sent or
+  // received — it has no visibility into this engine's plain disk reads.
+  // Without this, a tab that just freshly read a newer value from storage
+  // could still have that overwritten by a stale, still-debounced broadcast
+  // arriving later from another tab, since TabSync's own staleness check
+  // would see no prior timestamp for this key and let it through.
+  private lastAppliedTs = 0
+
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private throttleTimer: ReturnType<typeof setTimeout> | null = null
   private lastWriteTime = 0
@@ -253,6 +264,8 @@ export class StorageEngine<T> {
 
   remove(): void {
     this.hasExternalWrite = true
+    const ts = Date.now()
+    this.lastAppliedTs = ts
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
@@ -275,7 +288,6 @@ export class StorageEngine<T> {
     this.writeChain = task.catch(() => {})
 
     if (this.tabSync) {
-      const ts = Date.now()
       const tombstone: StorageEnvelope = {
         v: this.version,
         d: this.serializer.serialize(this.defaultValue),
@@ -391,6 +403,7 @@ export class StorageEngine<T> {
     }
 
     this.patchSnapshot({ expiry: envelope.exp ? new Date(envelope.exp) : null })
+    this.lastAppliedTs = envelope.ts
 
     if (envelope.v !== this.version) {
       let deserialized: unknown
@@ -468,10 +481,12 @@ export class StorageEngine<T> {
     try {
       await this.adapter.setItem(this.key, raw)
       this.patchSnapshot({ expiry: exp ? new Date(exp) : null })
+      this.lastAppliedTs = ts
     } catch (e) {
       if (e instanceof DOMException && e.name === 'QuotaExceededError') {
         const recovered = await this.recoverFromQuotaExceeded(raw, exp)
         if (recovered) {
+          this.lastAppliedTs = ts
           this.emitEvent('write', { schemaVersion, recoveredFromQuota: true })
           if (broadcast && this.tabSync) this.tabSync.broadcast(this.key, raw, ts)
           return
@@ -669,6 +684,11 @@ export class StorageEngine<T> {
         }
         try {
           const envelope = JSON.parse(dataRaw) as StorageEnvelope
+          // TabSync's own per-key timestamp tracking doesn't know about
+          // this engine's plain disk reads (see lastAppliedTs's
+          // declaration) — guard against a stale, still-debounced message
+          // from another tab overwriting a value already known to be newer.
+          if (envelope.ts < this.lastAppliedTs) return
           if (!TTLManager.isExpired(envelope.exp)) {
             const data = this.serializer.deserialize(envelope.d)
             // A cross-tab update is just as authoritative as a local
@@ -676,6 +696,7 @@ export class StorageEngine<T> {
             // flight, the initial read must not overwrite it once it
             // resolves (same reasoning as hasExternalWrite's declaration).
             this.hasExternalWrite = true
+            this.lastAppliedTs = envelope.ts
             this.applyValue(data)
             this.patchSnapshot({ expiry: envelope.exp ? new Date(envelope.exp) : null })
             this.emitEvent('sync-received')

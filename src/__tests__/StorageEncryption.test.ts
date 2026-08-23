@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { encrypt, decrypt, reencrypt, rotateEncryptedKey } from '../crypto/StorageEncryption'
+import { sign, verify } from '../crypto/StorageSigning'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
 
@@ -89,6 +90,25 @@ describe('StorageEncryption', () => {
     it('is a no-op when the key is absent', async () => {
       await rotateEncryptedKey('memory', 'missing', { password: 'a' }, { password: 'b' })
       expect(await adapter.getItem('missing')).toBeNull()
+    })
+
+    it('rotates a value that was also sign()ed, preserving a valid signature', async () => {
+      const oldOpts = { password: 'old-pw', iterations: 1000 }
+      const newOpts = { password: 'new-pw', iterations: 1000 }
+      const signOpts = { password: 'sign-pw' }
+
+      const encrypted = await encrypt('stored-secret', oldOpts)
+      const signed = await sign(encrypted, signOpts)
+      await adapter.setItem('signed-key', signed)
+
+      await rotateEncryptedKey('memory', 'signed-key', oldOpts, newOpts, signOpts)
+
+      const raw = await adapter.getItem('signed-key')
+      expect(raw).not.toBe(signed)
+      const unwrapped = await verify(raw!, signOpts)
+      expect(await decrypt(unwrapped, newOpts)).toBe('stored-secret')
+      // The old password no longer decrypts it.
+      await expect(decrypt(unwrapped, oldOpts)).rejects.toThrow()
     })
   })
 })

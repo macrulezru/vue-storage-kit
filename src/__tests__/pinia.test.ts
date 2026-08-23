@@ -137,6 +137,38 @@ describe('createPiniaPersist', () => {
     )
   })
 
+  it('does not let a slow restore clobber a mutation that happened while it was in flight', async () => {
+    // Pre-seed storage with an "old" persisted value.
+    await adapter.setItem('counter', JSON.stringify({ count: 42, name: 'stale' }))
+
+    // Gate getItem() so restore's read stays in flight until released.
+    let releaseRead!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    const originalGetItem = adapter.getItem.bind(adapter)
+    vi.spyOn(adapter, 'getItem').mockImplementation(async (key: string) => {
+      await gate
+      return originalGetItem(key)
+    })
+
+    setupPinia()
+    const store = useCounter()
+
+    // Mutate the store (triggers a persist) while restore's getItem() is
+    // still gated.
+    store.count = 5
+    await flush()
+
+    // Only now let the (now-stale-relative-to-the-mutation) restore read
+    // resolve.
+    releaseRead()
+    await flush()
+
+    // The mutation must win — restore must not have reverted it.
+    expect(store.count).toBe(5)
+  })
+
   it('reports write-failed via onError for non-quota adapter errors', async () => {
     const boom = new Error('disk on fire')
     vi.spyOn(adapter, 'setItem').mockImplementation(() => {

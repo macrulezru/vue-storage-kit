@@ -34,24 +34,36 @@ async function simulateCorruptedRestore() {
   restoreError.value = ''
   localStorage.setItem('demo-corrupted', 'not valid json{{{')
 
-  const { createPinia } = await import('pinia')
+  const { createPinia, getActivePinia, setActivePinia, disposePinia } = await import('pinia')
   const { createPiniaPersist } = await import('vue-storage-kit/pinia')
   const { createApp } = await import('vue')
 
+  // app.use(pinia) makes this throwaway instance the *global* active pinia
+  // (pinia.install() calls setActivePinia() internally) — without saving
+  // and restoring the real app's instance, this demo component would
+  // permanently steal it, breaking the counter store above and anything
+  // else on the page that resolves its store via the active pinia rather
+  // than an explicit instance.
+  const previousPinia = getActivePinia()
   const pinia = createPinia()
-  pinia.use(createPiniaPersist({
-    key: 'demo-corrupted',
-    onError: (err) => { restoreError.value = JSON.stringify(err, null, 2) },
-  }))
-  createApp({}).use(pinia)
+  try {
+    pinia.use(createPiniaPersist({
+      key: 'demo-corrupted',
+      onError: (err) => { restoreError.value = JSON.stringify(err, null, 2) },
+    }))
+    createApp({}).use(pinia)
 
-  const useBrokenStore = defineStore('demo-corrupted-store', { state: () => ({ x: 1 }) })
-  // Pinia stores are process-wide by store id, not by pinia instance — use a
-  // throwaway id so this doesn't collide with a real store.
-  useBrokenStore(pinia)
+    const useBrokenStore = defineStore('demo-corrupted-store', { state: () => ({ x: 1 }) })
+    // Pinia stores are process-wide by store id, not by pinia instance — use
+    // a throwaway id so this doesn't collide with a real store.
+    useBrokenStore(pinia)
 
-  await new Promise((r) => setTimeout(r, 10))
-  localStorage.removeItem('demo-corrupted')
+    await new Promise((r) => setTimeout(r, 10))
+  } finally {
+    disposePinia(pinia)
+    if (previousPinia) setActivePinia(previousPinia)
+    localStorage.removeItem('demo-corrupted')
+  }
 }
 </script>
 
