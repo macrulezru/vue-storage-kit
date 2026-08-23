@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { StorageEngine } from '../engine/StorageEngine'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
+import { TabSync } from '../sync/TabSync'
 
 let adapter: MemoryStorageAdapter
 
@@ -534,13 +535,19 @@ describe('StorageEngine — sync update racing the initial read', () => {
     }
   }
 
-  class DelayedAdapter extends MemoryStorageAdapter {
-    constructor(private readonly delayMs: number) {
-      super()
-    }
+  // Blocks getItem() until the test explicitly releases it, instead of
+  // guessing a delay long enough to outlast the rest of the setup.
+  class GatedAdapter extends MemoryStorageAdapter {
+    private release!: () => void
+    private readonly gate = new Promise<void>((resolve) => {
+      this.release = resolve
+    })
     async getItem(key: string): Promise<string | null> {
-      await new Promise((r) => setTimeout(r, this.delayMs))
+      await this.gate
       return super.getItem(key)
+    }
+    releaseRead(): void {
+      this.release()
     }
   }
 
@@ -549,9 +556,33 @@ describe('StorageEngine — sync update racing the initial read', () => {
     MockBroadcastChannel.reset()
   })
 
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('preserves a cross-tab sync update that lands while the initial read is still in flight', async () => {
-    const delayedAdapter = new DelayedAdapter(50)
-    vi.spyOn(StorageAdapterFactory, 'get').mockReturnValue(delayedAdapter)
+    const gatedAdapter = new GatedAdapter()
+    vi.spyOn(StorageAdapterFactory, 'get').mockReturnValue(gatedAdapter)
+
+    // The raw BroadcastChannel-level addEventListener() (inside
+    // TabSync.start()) fires a whole microtask before TabSync.subscribe()
+    // actually registers interest in this specific key — delivering right
+    // after the former, not the latter, drops the message. Spy on the
+    // latter, the exact point a delivered message can actually reach this
+    // engine, instead of guessing a delay.
+    let resolveSubscribed!: () => void
+    const subscribed = new Promise<void>((resolve) => {
+      resolveSubscribed = resolve
+    })
+    const originalSubscribe = TabSync.prototype.subscribe
+    vi.spyOn(TabSync.prototype, 'subscribe').mockImplementation(function (
+      this: TabSync,
+      key,
+      cb,
+    ) {
+      originalSubscribe.call(this, key, cb)
+      resolveSubscribed()
+    })
 
     const engine = new StorageEngine('sync-race-key', {
       defaultValue: 'default',
@@ -559,14 +590,19 @@ describe('StorageEngine — sync update racing the initial read', () => {
       sync: { channel: 'race-channel' },
     })
 
-    // Delivered while the 50ms-delayed initial read is still in flight.
-    await new Promise((r) => setTimeout(r, 10))
+    // Deliver only once TabSync has actually subscribed to this key —
+    // deterministic, not dependent on a guessed delay.
+    await subscribed
     const envelope = JSON.stringify({ v: 1, d: '"from-other-tab"', exp: null, ts: Date.now() })
     MockBroadcastChannel.deliverTo('race-channel', {
       key: 'sync-race-key',
       value: envelope,
       ts: Date.now(),
     })
+
+    // Only now let the still-in-flight initial read resolve, so it's
+    // guaranteed to land strictly after the sync update was applied.
+    gatedAdapter.releaseRead()
 
     await engine.ready
     // The initial read (resolving after the sync update) must not clobber
