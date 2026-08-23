@@ -49,7 +49,13 @@ export function createPiniaPersist(opts: PiniaPersistOptions = {}) {
     // defaultValue-initialized values until this resolves, same tradeoff as
     // useStorage()'s isReady.
     void (async () => {
-      const raw = await adapter.getItem(key)
+      let raw: string | null
+      try {
+        raw = await adapter.getItem(key)
+      } catch (e) {
+        onError?.({ type: 'read-failed', key, error: e as Error })
+        return
+      }
       if (raw !== null) {
         beforeRestore?.(ctx)
         try {

@@ -244,11 +244,14 @@ describe('useStorage', () => {
 
     await new Promise((r) => setTimeout(r, 10))
     value.value = 'changed'
-    await nextTick()
+    // The write is chained onto a per-engine promise queue (see
+    // StorageEngine's writeChain) — a single Vue tick isn't guaranteed to
+    // flush it, unlike the synchronous local `value` update.
+    await new Promise((r) => setTimeout(r, 10))
     expect(await adapter.getItem('key')).not.toBeNull()
 
     remove()
-    await nextTick()
+    await new Promise((r) => setTimeout(r, 10))
     expect(value.value).toBe('default')
     expect(await adapter.getItem('key')).toBeNull()
   })

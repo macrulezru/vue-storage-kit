@@ -47,7 +47,12 @@ export function useStorage<T>(key: string, options: StorageOptions<T>): UseStora
 
   const subscribe = useCallback((onStoreChange: () => void) => engine.subscribe(onStoreChange), [engine])
   const getSnapshot = useCallback(() => engine.getSnapshot(), [engine])
-  const snapshot = useSyncExternalStore(subscribe, getSnapshot)
+  // The engine's initial snapshot (defaultValue, isReady: false) is already
+  // safe to render on the server — the async read that would change it
+  // can't have resolved yet during a synchronous SSR render — so the same
+  // getter serves as getServerSnapshot. Passing one is required for
+  // useSyncExternalStore to work under SSR at all (React throws without it).
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
   const setValue = useCallback(
     (next: T | ((prev: T) => T)) => {

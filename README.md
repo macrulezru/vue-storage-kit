@@ -48,7 +48,7 @@ Reactive localStorage, sessionStorage, IndexedDB and cookies for Vue 3 (and Reac
 - **Schema migrations** — versioned data with `up` / `down` migration chains; runs automatically on version mismatch, writes back the migrated value
 - **TTL** — optional time-to-live per key; lazy expiry checked on every read, no timers; manual `cleanExpired()` sweep for startup cleanup
 - **AES-GCM encryption** — Web Crypto API (`crypto.subtle`), key derived from a password via PBKDF2 or supplied as a `CryptoKey`; salt + IV + ciphertext packed into a single base64 string; derived key cached in session memory; `reencrypt()`/`rotateEncryptedKey()` to rotate a password without data loss
-- **HMAC signing** — lightweight tamper detection (`sign: true`) for data that doesn't need to be secret but shouldn't be silently alterable; combine with `encrypt` for confidentiality + integrity
+- **HMAC signing** — lightweight tamper detection (`sign: { password }`) for data that doesn't need to be secret but shouldn't be silently alterable; combine with `encrypt` for confidentiality + integrity
 - **Undo / redo** — `history: n` keeps the last *n* values in memory; `undo()` / `redo()` navigate them (not persisted across reloads)
 - **Debounce & throttle** — `debounce` coalesces writes after a pause; `throttle` guarantees a write at most every *n* ms during continuous changes (a slider, a drag)
 - **Resilient writes** — on `QuotaExceededError`, sweeps this adapter's own expired-TTL entries and retries once; opt into `evictOnQuota` to additionally evict the least-recently-written *other* keys. Non-quota write errors are reported via `onError`, not thrown from inside a reactive callback
@@ -440,6 +440,8 @@ const { value } = useStorage('vault', {
 
 A failed signature check reports `{ type: 'signature-invalid', key }` via `onError` and falls back to `defaultValue`, the same way a decrypt failure does.
 
+Like `encrypt`, this only protects against someone who doesn't know the password/key — a browser extension or DevTools console running as the app itself can read the password out of memory (or wherever the app sourced it from) just as easily as it can read the stored value. Signing detects an *outside* editor of the raw storage entry, not a compromised or malicious instance of your own app.
+
 Standalone `sign()` / `verify()` are also exported from `/crypto`, mirroring `encrypt()` / `decrypt()`.
 
 ---
@@ -758,6 +760,8 @@ useIDBRef()
 useCookie()
 ```
 
+> **SSR caveat:** the `StorageEngine` instance cache (keyed by `target:key`, shared across both the Vue and React bindings) is a module-level singleton per server process, not per-request. `target: 'local'` / `'session'` already fail closed to `defaultValue` server-side (there's no `window` in Node). `target: 'memory'`/`'indexeddb'`, however, have no such guard and would share state across concurrent requests on the same server if used during SSR — avoid those targets for per-request/per-user data server-side; they're intended for client-side use.
+
 ---
 
 ## React support
@@ -878,6 +882,7 @@ import type {
   // { type: 'crypto-error'; operation; error }
   // { type: 'write-failed'; key; error }
   // { type: 'signature-invalid'; key }
+  // { type: 'read-failed'; key; error }
 
   // Low-level adapter interface (all methods return Promises)
   StorageAdapter,
@@ -916,6 +921,9 @@ function handleError(err: StorageError) {
       break
     case 'write-failed':
       console.error('Non-quota write failure:', err.key, err.error)
+      break
+    case 'read-failed':
+      console.error('Could not read from storage:', err.key, err.error)
       break
   }
 }

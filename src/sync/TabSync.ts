@@ -83,6 +83,15 @@ export class TabSync {
   stop(): void {
     for (const timer of this.pendingTimers.values()) clearTimeout(timer)
     this.pendingTimers.clear()
+
+    // Flush any messages still waiting out their debounce window instead of
+    // dropping them — otherwise the last update before a dispose/unmount
+    // would silently never reach other tabs.
+    if (this.channel) {
+      for (const pending of this.pendingMessages.values()) {
+        this.channel.postMessage(pending)
+      }
+    }
     this.pendingMessages.clear()
 
     this.channel?.close()

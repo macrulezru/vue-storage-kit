@@ -45,6 +45,12 @@ async function readBack() {
 const newPassword = ref('a-brand-new-password')
 const rotateStatus = ref('')
 const rotateBusy = ref(false)
+// useStorage()'s `encrypt: { password }` is captured once, when the
+// composable is first called — it isn't reactive to `password.value`
+// changing afterwards. So once rotation succeeds, "Save" above would
+// re-encrypt under the *old* password again and clobber the rotated data;
+// disable it instead of letting the demo silently misbehave.
+const rotatedAway = ref(false)
 
 async function rotateKey() {
   rotateBusy.value = true
@@ -69,8 +75,9 @@ async function rotateKey() {
     rotateStatus.value = oldStillWorks
       ? '⚠️ old password still decrypts it — something is wrong'
       : newWorks
-        ? '✓ rotated — old password now fails, new password works'
+        ? '✓ rotated — old password now fails, new password works. "Save" above is now disabled: this demo\'s live useStorage() instance still holds the old password (options are captured once, not reactive) — reload the page to pick up the rotated one.'
         : '⚠️ new password does not decrypt it — something is wrong'
+    if (!oldStillWorks && newWorks) rotatedAway.value = true
   } catch (e) {
     rotateStatus.value = `Error: ${e}`
   }
@@ -98,11 +105,14 @@ async function rotateKey() {
         <input v-model="inputValue" type="text" style="flex:1" />
       </div>
       <div class="row">
-        <button @click="save" :disabled="busy">Save to storage</button>
+        <button @click="save" :disabled="busy || rotatedAway">Save to storage</button>
         <button class="ghost" @click="readBack" :disabled="busy">Read back &amp; decrypt</button>
         <span v-if="busy" style="font-size:0.8rem;color:var(--muted)">Working…</span>
       </div>
       <div v-if="error" class="badge badge-red" style="margin-top:0.5rem">{{ error }}</div>
+      <div v-if="rotatedAway" style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">
+        Disabled after key rotation — reload the page to save with the new password.
+      </div>
     </div>
 
     <div v-if="rawInStorage !== null" class="card">

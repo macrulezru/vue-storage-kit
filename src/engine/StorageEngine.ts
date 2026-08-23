@@ -38,6 +38,18 @@ type SigningModule = typeof import('../crypto/StorageSigning')
 type CompressModule = typeof import('../compress/Compression')
 type TabSyncModule = typeof import('../sync/TabSync')
 
+// Used to keep the history/redo stacks independent of whatever object the
+// caller (e.g. a Vue deep-reactive ref) may go on mutating in place after
+// handing it to setValue() — see the `lastCommitted` field below.
+function cloneValue<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value
+  try {
+    return structuredClone(value)
+  } catch {
+    return value
+  }
+}
+
 /**
  * Framework-agnostic reactive-storage engine — the shared core behind
  * useStorage() on both the Vue and React sides. No Vue or React import
@@ -80,6 +92,32 @@ export class StorageEngine<T> {
 
   private historyStack: T[] = []
   private redoStack: T[] = []
+  // An independent clone of the currently-applied value, maintained
+  // alongside snapshot.value. history/redo pushes read from this instead of
+  // snapshot.value directly: for object/array values, a caller that mutates
+  // its reactive ref in place (e.g. Vue's `value.value.foo = x` under a deep
+  // watcher) mutates the very same object snapshot.value points to, so by
+  // the time setValue() runs, snapshot.value is already indistinguishable
+  // from the new value — pushing it onto the history stack would silently
+  // record a no-op undo.
+  private lastCommitted: T
+
+  // Set once setValue()/undo()/redo()/remove() is called before the initial
+  // read has finished. Without this, a caller that mutates the value
+  // synchronously right after useStorage() (before its very first read
+  // resolves — the intended use of `isReady`, but not everyone checks it)
+  // could have that edit silently reverted the moment the slower-to-resolve
+  // initial read finally comes back and unconditionally re-applies whatever
+  // it found in storage.
+  private hasExternalWrite = false
+
+  // Serializes writeToStorage() and remove()'s adapter call onto a single
+  // per-engine chain so two overlapping writes (or a write racing a remove)
+  // can't complete out of order — e.g. an older setValue()'s encrypt+write
+  // finishing after a newer one's, silently reverting storage to a stale
+  // value. Never left rejected: each link swallows its own failure so a
+  // thrown write doesn't poison every write queued after it.
+  private writeChain: Promise<void> = Promise.resolve()
 
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private throttleTimer: ReturnType<typeof setTimeout> | null = null
@@ -90,6 +128,7 @@ export class StorageEngine<T> {
 
   /** Resolves once the initial read (and cross-tab subscription, if any) has settled. */
   readonly ready: Promise<void>
+  private readonly modulesReady: Promise<void>
 
   constructor(key: string, options: StorageOptions<T>) {
     this.key = key
@@ -125,6 +164,7 @@ export class StorageEngine<T> {
     this.onExpireCb = options.onExpire
     this.onMigrateCb = options.onMigrate
     this.defaultValue = options.defaultValue
+    this.lastCommitted = this.defaultValue
 
     this.adapter = StorageAdapterFactory.get(this.target)
 
@@ -137,7 +177,13 @@ export class StorageEngine<T> {
       canRedo: false,
     }
 
-    this.ready = this.init().catch((e: unknown) => {
+    // Resolves once the crypto/compress/sign modules this instance needs
+    // (if any) have finished loading — writeToStorage() awaits this before
+    // touching them, so a write triggered before the async module import
+    // settles can't silently skip encryption/compression/signing (see
+    // loadModules()/finishInit() below).
+    this.modulesReady = this.loadModules()
+    this.ready = this.modulesReady.then(() => this.finishInit()).catch((e: unknown) => {
       this.reportError({ type: 'parse-error', key: this.key, raw: String(e) })
       this.patchSnapshot({ isReady: true })
     })
@@ -183,8 +229,9 @@ export class StorageEngine<T> {
   // ─── Public API ─────────────────────────────────────────────────────────────
 
   setValue(newValue: T): void {
+    this.hasExternalWrite = true
     if (this.historyLimit > 0) {
-      this.historyStack.push(this.snapshot.value)
+      this.historyStack.push(this.lastCommitted)
       if (this.historyStack.length > this.historyLimit) this.historyStack.shift()
       this.redoStack = []
     }
@@ -194,22 +241,25 @@ export class StorageEngine<T> {
 
   undo(): void {
     if (this.historyStack.length === 0) return
+    this.hasExternalWrite = true
     const previous = this.historyStack.pop()!
-    this.redoStack.push(this.snapshot.value)
+    this.redoStack.push(this.lastCommitted)
     this.applyValue(previous)
     this.scheduleWrite(previous)
   }
 
   redo(): void {
     if (this.redoStack.length === 0) return
+    this.hasExternalWrite = true
     const next = this.redoStack.pop()!
-    this.historyStack.push(this.snapshot.value)
+    this.historyStack.push(this.lastCommitted)
     if (this.historyStack.length > this.historyLimit) this.historyStack.shift()
     this.applyValue(next)
     this.scheduleWrite(next)
   }
 
   remove(): void {
+    this.hasExternalWrite = true
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
@@ -220,13 +270,16 @@ export class StorageEngine<T> {
       this.pendingThrottleBox = undefined
     }
 
-    void (async () => {
+    // Chained onto writeChain so a remove() can't race an in-flight write to
+    // the same key and complete out of order (see writeChain's declaration).
+    const task = this.writeChain.then(async () => {
       try {
         await this.adapter.removeItem(this.key)
       } catch {
         // best-effort — local state is already reset below regardless
       }
-    })()
+    })
+    this.writeChain = task.catch(() => {})
 
     if (this.tabSync) {
       const ts = Date.now()
@@ -260,6 +313,9 @@ export class StorageEngine<T> {
   // ─── Internal: apply a value without recording history or scheduling a write ──
 
   private applyValue(newValue: T): void {
+    if (this.historyLimit > 0) {
+      this.lastCommitted = cloneValue(newValue)
+    }
     this.patchSnapshot({
       value: newValue,
       canUndo: this.historyStack.length > 0,
@@ -378,7 +434,12 @@ export class StorageEngine<T> {
     }
 
     if (this.signOpts && this.signingMod) {
-      raw = await this.signingMod.sign(raw, this.signOpts)
+      try {
+        raw = await this.signingMod.sign(raw, this.signOpts)
+      } catch (e) {
+        this.reportError({ type: 'write-failed', key: this.key, error: e as Error })
+        return
+      }
     }
 
     try {
@@ -471,7 +532,19 @@ export class StorageEngine<T> {
   }
 
   private async writeToStorage(data: T): Promise<void> {
-    return this.writeToStorageInternal(data, this.version, true)
+    // Wait for encrypt/compress/sign modules to finish loading before this
+    // write touches this.cryptoMod/compressMod/signingMod — otherwise a
+    // write triggered synchronously right after construction (before the
+    // dynamic import()s in loadModules() settle) would silently skip
+    // encryption/compression/signing instead of waiting for it.
+    await this.modulesReady
+    // Chained onto writeChain so two overlapping writes (or a write racing
+    // a remove()) can't finish out of order — see writeChain's declaration.
+    const task = this.writeChain.then(() =>
+      this.writeToStorageInternal(data, this.version, true),
+    )
+    this.writeChain = task.catch(() => {})
+    return task
   }
 
   // ─── Internal: debounce/throttle scheduling ────────────────────────────────
@@ -526,7 +599,7 @@ export class StorageEngine<T> {
 
   // ─── Internal: init ─────────────────────────────────────────────────────────
 
-  private async init(): Promise<void> {
+  private async loadModules(): Promise<void> {
     if (this.encryptOpts) {
       this.cryptoMod = await import('../crypto/StorageEncryption')
     }
@@ -536,7 +609,9 @@ export class StorageEngine<T> {
     if (this.signOpts) {
       this.signingMod = await import('../crypto/StorageSigning')
     }
+  }
 
+  private async finishInit(): Promise<void> {
     if (this.syncOpts) {
       const syncOpts = this.syncOpts === true ? {} : this.syncOpts
       const { TabSync } = await import('../sync/TabSync')
@@ -577,7 +652,12 @@ export class StorageEngine<T> {
     }
 
     const initial = await this.readFromStorage()
-    this.applyValue(initial)
+    // Don't clobber a value the caller already set (via setValue/undo/redo/
+    // remove) while this initial read was still in flight — see
+    // hasExternalWrite's declaration.
+    if (!this.hasExternalWrite) {
+      this.applyValue(initial)
+    }
     this.patchSnapshot({ isReady: true })
   }
 }

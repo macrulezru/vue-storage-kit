@@ -313,14 +313,19 @@ describe('StorageEngine — history / undo / redo', () => {
   it('caps history at the configured limit', async () => {
     const engine = new StorageEngine('k', { defaultValue: 0, target: 'memory', history: 2 })
     await engine.ready
-    engine.setValue(1)
-    engine.setValue(2)
-    engine.setValue(3) // history: [1,2] before this push -> caps to [2,3]... value becomes 3, stack holds [2,3]-ish
+    engine.setValue(1) // historyStack: [0]
+    engine.setValue(2) // historyStack: [0,1]
+    engine.setValue(3) // historyStack: [0,1,2] capped to [1,2] — the push of 0 is dropped
 
     engine.undo()
+    expect(engine.getSnapshot().value).toBe(2)
     engine.undo()
-    // Only 2 undos should be available (history limit 2) — the oldest push (0) should have been dropped.
-    expect(engine.getSnapshot().value).not.toBe(0)
+    expect(engine.getSnapshot().value).toBe(1)
+    expect(engine.getSnapshot().canUndo).toBe(false)
+
+    // A third undo would be the dropped value (0) — confirm it's gone, not just skipped.
+    engine.undo()
+    expect(engine.getSnapshot().value).toBe(1)
     engine.dispose()
   })
 

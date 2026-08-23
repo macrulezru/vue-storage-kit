@@ -27,6 +27,7 @@ export interface EncryptOptions {
 export interface SignOptions {
   password?: string
   key?: CryptoKey
+  iterations?: number
 }
 
 export type CompressionAlgorithm = 'gzip' | 'deflate' | 'deflate-raw'
@@ -103,3 +104,4 @@ export type StorageError =
   | { type: 'crypto-error'; operation: 'encrypt' | 'decrypt'; error: Error }
   | { type: 'write-failed'; key: string; error: Error }
   | { type: 'signature-invalid'; key: string }
+  | { type: 'read-failed'; key: string; error: Error }

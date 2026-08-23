@@ -21,10 +21,21 @@ export function useStorageKeys(
 
   const keys = ref<string[]>([])
   const isReady = ref(false)
+  // Guards against two overlapping refresh() calls (e.g. rapid storage
+  // events) applying out of order — only the result of the most recently
+  // *started* call is ever applied.
+  let refreshToken = 0
 
   async function refresh(): Promise<void> {
-    keys.value = await getKeys()
-    isReady.value = true
+    const token = ++refreshToken
+    try {
+      const next = await getKeys()
+      if (token !== refreshToken) return
+      keys.value = next
+    } catch {
+      // best-effort — leave `keys` at its last known value
+    }
+    if (token === refreshToken) isReady.value = true
   }
 
   void refresh()
