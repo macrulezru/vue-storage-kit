@@ -3,6 +3,14 @@ import { StorageEngine } from '../engine/StorageEngine'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
 import { TabSync } from '../sync/TabSync'
+import { TTLManager } from '../core/TTLManager'
+
+// Every raw stored value is now prefixed with a plaintext {"exp","ts"}
+// meta header (see TTLManager.wrapWithMeta) — strip it before inspecting
+// the actual (possibly compress/encrypt/sign-transformed) payload.
+function payloadOf(raw: string): string {
+  return TTLManager.unwrapMeta(raw)?.payload ?? raw
+}
 
 let adapter: MemoryStorageAdapter
 
@@ -258,7 +266,7 @@ describe('StorageEngine — debounce / throttle', () => {
 
     await flush()
     const raw = await adapter.getItem('k')
-    expect(JSON.parse((JSON.parse(raw!) as { d: string }).d)).toBe(42)
+    expect(JSON.parse((JSON.parse(payloadOf(raw!)) as { d: string }).d)).toBe(42)
   })
 
   it('throttle writes immediately once, then guarantees a trailing write', async () => {
@@ -278,7 +286,7 @@ describe('StorageEngine — debounce / throttle', () => {
     await flush(40)
     expect(setItemSpy).toHaveBeenCalledTimes(2)
     const raw = await adapter.getItem('k')
-    expect(JSON.parse((JSON.parse(raw!) as { d: string }).d)).toBe(3)
+    expect(JSON.parse((JSON.parse(payloadOf(raw!)) as { d: string }).d)).toBe(3)
     engine.dispose()
   })
 })
@@ -412,6 +420,38 @@ describe('StorageEngine — quota-exceeded recovery', () => {
     engine.dispose()
   })
 
+  it('sweeps an expired key even when its payload is encrypted', async () => {
+    // A short-TTL encrypted entry from a completely different engine — the
+    // one about to hit quota below has no idea it's encrypted, or what its
+    // password is. Before TTLManager's plaintext exp header, cleanExpired()
+    // couldn't have read `exp` off this at all and would have left it alone.
+    const staleEngine = new StorageEngine('stale-encrypted', {
+      defaultValue: '',
+      target: 'memory',
+      encrypt: { password: 'pw', iterations: 1000 },
+      ttl: 10,
+    })
+    await staleEngine.ready
+    staleEngine.setValue('secret')
+    await waitForWrite(() => adapter.getItem('stale-encrypted'))
+    await flush(20) // let the 10ms TTL elapse
+    staleEngine.dispose()
+
+    vi.spyOn(adapter, 'setItem').mockImplementationOnce(() => {
+      throw new DOMException('QuotaExceededError', 'QuotaExceededError')
+    })
+
+    const onError = vi.fn()
+    const engine = new StorageEngine('k', { defaultValue: 0, target: 'memory', onError })
+    await engine.ready
+    engine.setValue(1)
+    await flush(20)
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(await adapter.getItem('stale-encrypted')).toBeNull()
+    engine.dispose()
+  })
+
   it('with evictOnQuota, evicts the oldest other key when TTL sweep is not enough', async () => {
     await adapter.setItem('old-key', JSON.stringify({ v: 1, d: '"x"', exp: null, ts: 100 }))
     await adapter.setItem('newer-key', JSON.stringify({ v: 1, d: '"y"', exp: null, ts: 200 }))
@@ -440,6 +480,47 @@ describe('StorageEngine — quota-exceeded recovery', () => {
 
     expect(onError).not.toHaveBeenCalled()
     expect(await adapter.getItem('old-key')).toBeNull()
+    expect(await adapter.getItem('newer-key')).not.toBeNull()
+    engine.dispose()
+  })
+
+  it('with evictOnQuota, can evict an oldest other key even when it is encrypted', async () => {
+    // The evicted key's `ts` is now readable via TTLManager's plaintext
+    // meta header, even though this engine (writing to 'k') doesn't know
+    // it's encrypted or what its password is.
+    const oldEncryptedEngine = new StorageEngine('old-encrypted', {
+      defaultValue: '',
+      target: 'memory',
+      encrypt: { password: 'pw', iterations: 1000 },
+    })
+    await oldEncryptedEngine.ready
+    oldEncryptedEngine.setValue('x')
+    await waitForWrite(() => adapter.getItem('old-encrypted'))
+    oldEncryptedEngine.dispose()
+
+    await adapter.setItem('newer-key', JSON.stringify({ v: 1, d: '"y"', exp: null, ts: Date.now() + 100_000 }))
+
+    const original = adapter.setItem.bind(adapter)
+    let calls = 0
+    vi.spyOn(adapter, 'setItem').mockImplementation(async (key: string, val: string) => {
+      calls++
+      if (calls <= 2) throw new DOMException('QuotaExceededError', 'QuotaExceededError')
+      return original(key, val)
+    })
+
+    const onError = vi.fn()
+    const engine = new StorageEngine('k', {
+      defaultValue: 0,
+      target: 'memory',
+      evictOnQuota: true,
+      onError,
+    })
+    await engine.ready
+    engine.setValue(1)
+    await flush(20)
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(await adapter.getItem('old-encrypted')).toBeNull()
     expect(await adapter.getItem('newer-key')).not.toBeNull()
     engine.dispose()
   })

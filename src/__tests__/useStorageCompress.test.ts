@@ -4,6 +4,14 @@ import { useStorage, _clearInstanceCache } from '../composables/useStorage'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
 import { isCompressed } from '../compress/Compression'
+import { TTLManager } from '../core/TTLManager'
+
+// Every raw stored value is now prefixed with a plaintext {"exp","ts"}
+// meta header (see TTLManager.wrapWithMeta) — strip it before inspecting
+// the actual (possibly compressed) payload.
+function payloadOf(raw: string): string {
+  return TTLManager.unwrapMeta(raw)?.payload ?? raw
+}
 
 let adapter: MemoryStorageAdapter
 
@@ -39,8 +47,8 @@ describe('useStorage + compress', () => {
 
     const raw = await adapter.getItem('compressed-key')
     expect(raw).not.toBeNull()
-    expect(isCompressed(raw!)).toBe(true)
-    expect(() => JSON.parse(raw!)).toThrow()
+    expect(isCompressed(payloadOf(raw!))).toBe(true)
+    expect(() => JSON.parse(payloadOf(raw!))).toThrow()
   })
 
   it('round-trips a compressed object value', async () => {
@@ -80,7 +88,7 @@ describe('useStorage + compress', () => {
     expect(raw).not.toBeNull()
     // Encrypted output must not carry the plaintext magic prefix (compression
     // happens before encryption, so the ciphertext looks like opaque base64).
-    expect(isCompressed(raw!)).toBe(false)
+    expect(isCompressed(payloadOf(raw!))).toBe(false)
 
     _clearInstanceCache()
 

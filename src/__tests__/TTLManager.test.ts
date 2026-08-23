@@ -33,6 +33,29 @@ describe('TTLManager', () => {
     })
   })
 
+  describe('wrapWithMeta / unwrapMeta', () => {
+    it('round-trips exp/ts and the payload', () => {
+      const wrapped = TTLManager.wrapWithMeta('opaque-ciphertext', { exp: 123, ts: 456 })
+      const unwrapped = TTLManager.unwrapMeta(wrapped)
+      expect(unwrapped).toEqual({ exp: 123, ts: 456, payload: 'opaque-ciphertext' })
+    })
+
+    it('round-trips a null exp', () => {
+      const wrapped = TTLManager.wrapWithMeta('x', { exp: null, ts: 1 })
+      expect(TTLManager.unwrapMeta(wrapped)).toEqual({ exp: null, ts: 1, payload: 'x' })
+    })
+
+    it('returns null for data with no recognizable header', () => {
+      expect(TTLManager.unwrapMeta('just a string')).toBeNull()
+      expect(TTLManager.unwrapMeta(JSON.stringify({ v: 1, d: 'x', exp: null, ts: 0 }))).toBeNull()
+    })
+
+    it('is unfooled by a payload that happens to contain a "|"', () => {
+      const wrapped = TTLManager.wrapWithMeta('a|b|c', { exp: null, ts: 1 })
+      expect(TTLManager.unwrapMeta(wrapped)).toEqual({ exp: null, ts: 1, payload: 'a|b|c' })
+    })
+  })
+
   describe('cleanExpired', () => {
     let adapter: MemoryStorageAdapter
 
@@ -61,6 +84,30 @@ describe('TTLManager', () => {
       expect(await adapter.getItem('app:key')).toBeNull()
       expect(await adapter.getItem('other:key')).not.toBeNull()
     })
+
+    it('removes an expired key even when its payload is opaque (encrypted/compressed/signed)', async () => {
+      // Simulates what StorageEngine.writeToStorageInternal() produces for
+      // an encrypt/compress/sign-transformed value: exp is unreadable
+      // without the key's own password, EXCEPT through the plaintext meta
+      // header — this is the whole point of wrapWithMeta().
+      const opaque = TTLManager.wrapWithMeta('unreadable-ciphertext-blob', {
+        exp: Date.now() - 1,
+        ts: 0,
+      })
+      await adapter.setItem('encrypted-key', opaque)
+      await TTLManager.cleanExpired(adapter)
+      expect(await adapter.getItem('encrypted-key')).toBeNull()
+    })
+
+    it('leaves a not-yet-expired opaque key alone', async () => {
+      const opaque = TTLManager.wrapWithMeta('unreadable-ciphertext-blob', {
+        exp: Date.now() + 60_000,
+        ts: 0,
+      })
+      await adapter.setItem('encrypted-key', opaque)
+      await TTLManager.cleanExpired(adapter)
+      expect(await adapter.getItem('encrypted-key')).not.toBeNull()
+    })
   })
 
   describe('getExpiry', () => {
@@ -85,6 +132,15 @@ describe('TTLManager', () => {
     it('returns null for key with exp=null', async () => {
       await adapter.setItem('k', JSON.stringify({ v: 1, d: '', exp: null, ts: 0 }))
       expect(await TTLManager.getExpiry(adapter, 'k')).toBeNull()
+    })
+
+    it('reads exp for a key with an opaque (encrypted/compressed/signed) payload', async () => {
+      const exp = Date.now() + 60_000
+      const opaque = TTLManager.wrapWithMeta('unreadable-ciphertext-blob', { exp, ts: 0 })
+      await adapter.setItem('k', opaque)
+      const result = await TTLManager.getExpiry(adapter, 'k')
+      expect(result).toBeInstanceOf(Date)
+      expect(result!.getTime()).toBe(exp)
     })
   })
 })

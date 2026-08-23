@@ -361,8 +361,15 @@ export class StorageEngine<T> {
   // ─── Internal: read pipeline ────────────────────────────────────────────────
 
   private async readFromStorage(): Promise<T> {
-    let raw = await this.adapter.getItem(this.key)
-    if (raw === null) return this.defaultValue
+    const stored = await this.adapter.getItem(this.key)
+    if (stored === null) return this.defaultValue
+
+    // Strip the plaintext exp/ts metadata header writeToStorageInternal()
+    // prepends (see TTLManager.wrapWithMeta) before touching sign/encrypt/
+    // compress. Falls back to treating the whole string as the payload for
+    // data that predates this header, or was seeded directly.
+    const meta = TTLManager.unwrapMeta(stored)
+    let raw = meta ? meta.payload : stored
 
     if (this.signOpts && this.signingMod) {
       try {
@@ -478,13 +485,20 @@ export class StorageEngine<T> {
       }
     }
 
+    // A small, always-plaintext exp/ts header in front of the (possibly
+    // compress/encrypt/sign-transformed) payload — TTLManager's TTL sweep
+    // and evictOnQuota's LRU eviction both need to read these for
+    // *arbitrary* keys during quota recovery, not just keys using this
+    // engine's own encryption settings. See TTLManager.wrapWithMeta().
+    const stored = TTLManager.wrapWithMeta(raw, { exp, ts })
+
     try {
-      await this.adapter.setItem(this.key, raw)
+      await this.adapter.setItem(this.key, stored)
       this.patchSnapshot({ expiry: exp ? new Date(exp) : null })
       this.lastAppliedTs = ts
     } catch (e) {
       if (e instanceof DOMException && e.name === 'QuotaExceededError') {
-        const recovered = await this.recoverFromQuotaExceeded(raw, exp)
+        const recovered = await this.recoverFromQuotaExceeded(stored, exp)
         if (recovered) {
           this.lastAppliedTs = ts
           this.emitEvent('write', { schemaVersion, recoveredFromQuota: true })
@@ -509,13 +523,10 @@ export class StorageEngine<T> {
    * One bounded recovery attempt on QuotaExceededError: sweep this adapter's
    * own expired-TTL entries and retry once; if that's not enough and
    * evictOnQuota is enabled, evict this adapter's least-recently-written
-   * *other* keys (oldest envelope `ts` first) one at a time, retrying after
-   * each, up to `max` evictions.
-   *
-   * Eviction can only judge the age of keys stored as plain (unencrypted,
-   * uncompressed) envelopes — an encrypted/compressed/signed key belonging
-   * to some other useStorage() instance can't be safely inspected here, so
-   * it's left alone.
+   * *other* keys (oldest `ts`, read from TTLManager's plaintext meta header
+   * — see wrapWithMeta() — so this works for other instances' compressed/
+   * encrypted/signed keys too, not just plain ones) one at a time, retrying
+   * after each, up to `max` evictions.
    */
   private async recoverFromQuotaExceeded(raw: string, exp: number | null): Promise<boolean> {
     try {
@@ -553,6 +564,19 @@ export class StorageEngine<T> {
       if (k === this.key) continue
       const raw = await this.adapter.getItem(k)
       if (!raw) continue
+
+      const meta = TTLManager.unwrapMeta(raw)
+      if (meta) {
+        if (meta.ts < oldestTs) {
+          oldestTs = meta.ts
+          oldestKey = k
+        }
+        continue
+      }
+
+      // No recognizable meta header — data written before it existed, or
+      // seeded directly (e.g. in a test). Fall back to reading `ts` off a
+      // plain, untransformed envelope; anything else can't be judged.
       try {
         const envelope = JSON.parse(raw) as { ts?: number }
         if (typeof envelope.ts === 'number' && envelope.ts < oldestTs) {
@@ -560,7 +584,7 @@ export class StorageEngine<T> {
           oldestKey = k
         }
       } catch {
-        // not a plain envelope (or encrypted/compressed) — can't judge age, skip
+        // not a plain envelope either — can't judge age, skip
       }
     }
 

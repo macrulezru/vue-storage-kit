@@ -4,7 +4,15 @@ import { useStorage, _clearInstanceCache } from '../composables/useStorage'
 import { VueStoragePlugin, _resetGlobalOptions } from '../plugin'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
+import { TTLManager } from '../core/TTLManager'
 import type { VueStoragePluginOptions } from '../plugin'
+
+// Every raw stored value is now prefixed with a plaintext {"exp","ts"}
+// meta header (see TTLManager.wrapWithMeta) — strip it before inspecting
+// the actual (possibly compress/encrypt/sign-transformed) payload.
+function payloadOf(raw: string): string {
+  return TTLManager.unwrapMeta(raw)?.payload ?? raw
+}
 
 function installPlugin(options: VueStoragePluginOptions): void {
   createApp({}).use(VueStoragePlugin, options)
@@ -104,7 +112,7 @@ describe('VueStoragePlugin global options', () => {
     await new Promise((r) => setTimeout(r, 10))
 
     const raw = await adapter.getItem('k')
-    const envelope = JSON.parse(raw!) as { d: string }
+    const envelope = JSON.parse(payloadOf(raw!)) as { d: string }
     expect(envelope.d).toBe('CUSTOM:"hello"')
   })
 
@@ -127,7 +135,7 @@ describe('VueStoragePlugin global options', () => {
     await new Promise((r) => setTimeout(r, 10))
 
     const raw = await adapter.getItem('k')
-    const envelope = JSON.parse(raw!) as { d: string }
+    const envelope = JSON.parse(payloadOf(raw!)) as { d: string }
     expect(envelope.d).toBe('LOCAL:hi')
   })
 
@@ -145,10 +153,10 @@ describe('VueStoragePlugin global options', () => {
 
     const raw = await adapter.getItem('secret')
     expect(raw).not.toBeNull()
-    expect(() => JSON.parse(raw!)).toThrow()
+    expect(() => JSON.parse(payloadOf(raw!))).toThrow()
 
     const { decrypt } = await import('../crypto/StorageEncryption')
-    const plain = await decrypt(raw!, { password: 'global-pw', iterations: 1000 })
+    const plain = await decrypt(payloadOf(raw!), { password: 'global-pw', iterations: 1000 })
     const envelope = JSON.parse(plain) as { d: string }
     expect(JSON.parse(envelope.d)).toBe('top secret')
   })
@@ -172,7 +180,7 @@ describe('VueStoragePlugin global options', () => {
 
     const raw = await adapter.getItem('secret2')
     const { decrypt } = await import('../crypto/StorageEncryption')
-    const plain = await decrypt(raw!, { password: 'global-pw', iterations: 2000 })
+    const plain = await decrypt(payloadOf(raw!), { password: 'global-pw', iterations: 2000 })
     const envelope = JSON.parse(plain) as { d: string }
     expect(JSON.parse(envelope.d)).toBe('merged')
   })

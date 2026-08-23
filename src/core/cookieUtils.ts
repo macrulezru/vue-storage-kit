@@ -12,7 +12,18 @@ export function parseCookieHeader(header: string | undefined | null): Record<str
       if (idx === -1) return [pair.trim(), '']
       const k = pair.slice(0, idx).trim()
       const v = pair.slice(idx + 1).trim()
-      return [k, decodeURIComponent(v)]
+      try {
+        return [k, decodeURIComponent(v)]
+      } catch {
+        // Malformed percent-escape (e.g. a stray "%" or a truncated
+        // sequence) — decodeURIComponent() throws URIError for these.
+        // Fall back to the raw value rather than letting that propagate and
+        // take down parsing of the *entire* cookie header (used during SSR,
+        // where the header comes straight from the client and can't be
+        // trusted well-formed). The caller's own deserialize() then fails
+        // gracefully on it instead, the same as any other corrupted value.
+        return [k, v]
+      }
     }),
   )
 }

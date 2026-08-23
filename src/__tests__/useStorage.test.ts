@@ -3,6 +3,14 @@ import { effectScope, nextTick } from 'vue'
 import { useStorage, useLocalStorage, _clearInstanceCache } from '../composables/useStorage'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
+import { TTLManager } from '../core/TTLManager'
+
+// Every raw stored value is now prefixed with a plaintext {"exp","ts"}
+// meta header (see TTLManager.wrapWithMeta) — strip it before inspecting
+// the actual (possibly compress/encrypt/sign-transformed) payload.
+function payloadOf(raw: string): string {
+  return TTLManager.unwrapMeta(raw)?.payload ?? raw
+}
 
 // Use memory adapter for all tests to avoid localStorage pollution
 beforeEach(() => {
@@ -165,7 +173,7 @@ describe('useStorage', () => {
     await new Promise((r) => setTimeout(r, 30))
     expect(setItemSpy).toHaveBeenCalledTimes(1)
     const raw = await adapter.getItem('debounced')
-    expect(JSON.parse((JSON.parse(raw!) as { d: string }).d)).toBe(3)
+    expect(JSON.parse((JSON.parse(payloadOf(raw!)) as { d: string }).d)).toBe(3)
   })
 
   it('flushes a pending debounced write on scope dispose', async () => {
@@ -184,7 +192,7 @@ describe('useStorage', () => {
     await new Promise((r) => setTimeout(r, 10))
     const raw = await adapter.getItem('flush-on-dispose')
     expect(raw).not.toBeNull()
-    expect(JSON.parse((JSON.parse(raw!) as { d: string }).d)).toBe(99)
+    expect(JSON.parse((JSON.parse(payloadOf(raw!)) as { d: string }).d)).toBe(99)
   })
 
   it('recovers from quota-exceeded by sweeping expired keys and retrying once', async () => {

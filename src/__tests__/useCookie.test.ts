@@ -71,6 +71,15 @@ describe('useCookie', () => {
     expect(ref.value).toBe('fr')
   })
 
+  it('does not throw when another cookie on the same document has a malformed percent-escape', () => {
+    // decodeURIComponent() throws URIError on a stray "%" — a neighboring
+    // cookie's malformed value must not take down parsing of this one.
+    document.cookie = 'other=%; path=/'
+    document.cookie = 'lang=%22fr%22; path=/'
+    const ref = withScope(() => useCookie('lang', { defaultValue: 'en' }))
+    expect(ref.value).toBe('fr')
+  })
+
   it('round-trips an object via JSON serializer', async () => {
     const ref = withScope(() =>
       useCookie<{ count: number }>('state', { defaultValue: { count: 0 } }),

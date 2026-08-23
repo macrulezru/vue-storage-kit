@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { effectScope } from 'vue'
 import {
   mockStorage,
@@ -7,8 +7,18 @@ import {
   seedExpiredEnvelope,
   flushAsync,
   MemoryStorageAdapter,
+  StorageAdapterFactory,
 } from '../testing/index'
 import { useStorage } from '../composables/useStorage'
+
+// Captured once, before any test runs — the genuine, unmocked
+// implementation. mockStorage()'s own restore() only knows about the state
+// immediately preceding its own call, so a test that calls mockStorage()
+// more than once (or forgets to call restore() at all) would otherwise
+// leave a stale mock in place for whatever test in this file runs next.
+// This afterEach is the actual safety net; individual tests' own restore()
+// calls below additionally demonstrate the documented usage pattern.
+const realGet = StorageAdapterFactory.get
 
 function withScope<T>(fn: () => T): T {
   const scope = effectScope()
@@ -19,6 +29,10 @@ function withScope<T>(fn: () => T): T {
 
 beforeEach(() => {
   resetStorageState()
+})
+
+afterEach(() => {
+  StorageAdapterFactory.get = realGet
 })
 
 describe('vue-storage-kit/testing', () => {
@@ -40,18 +54,22 @@ describe('vue-storage-kit/testing', () => {
 
   it('mockStorage() accepts a pre-built adapter', () => {
     const custom = new MemoryStorageAdapter()
-    const { adapter } = mockStorage(custom)
+    const { adapter, restore } = mockStorage(custom)
     expect(adapter).toBe(custom)
+    restore()
   })
 
-  it('restore() puts the real adapter factory back', async () => {
+  it('restore() puts the real adapter factory back', () => {
     const { restore } = mockStorage()
-    restore()
+    // mockStorage() must have actually replaced it first, or this test
+    // would trivially "pass" even if restore() did nothing.
+    expect(StorageAdapterFactory.get).not.toBe(realGet)
 
-    // Without a real DOM/localStorage this would throw when actually used —
-    // just check the factory function identity was restored, not exercise it.
-    const { StorageAdapterFactory } = await import('../adapters/StorageAdapterFactory')
-    expect(typeof StorageAdapterFactory.get).toBe('function')
+    restore()
+    // Validates the genuine original factory reference was restored, not
+    // just that *some* function is sitting there (a leftover mock from an
+    // earlier test, for instance, would also satisfy that weaker check).
+    expect(StorageAdapterFactory.get).toBe(realGet)
   })
 
   it('resetStorageState() clears the shared instance cache between tests', async () => {

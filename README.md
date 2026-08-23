@@ -48,7 +48,7 @@ Reactive localStorage, sessionStorage, IndexedDB and cookies for Vue 3 (and Reac
 - **Schema migrations** — versioned data with `up` / `down` migration chains; runs automatically on version mismatch, writes back the migrated value
 - **TTL** — optional time-to-live per key; lazy expiry checked on every read, no timers; manual `cleanExpired()` sweep for startup cleanup
 - **AES-GCM encryption** — Web Crypto API (`crypto.subtle`), key derived from a password via PBKDF2 or supplied as a `CryptoKey`; salt + IV + ciphertext packed into a single base64 string; derived key cached in session memory; `reencrypt()`/`rotateEncryptedKey()` to rotate a password without data loss
-- **HMAC signing** — lightweight tamper detection (`sign: { password }`) for data that doesn't need to be secret but shouldn't be silently alterable; combine with `encrypt` for confidentiality + integrity
+- **HMAC signing** — lightweight *accidental*-corruption detection (`sign: { password }`) for data that doesn't need to be secret; not a defense against a user editing their own browser's storage (see [Corruption detection](#corruption-detection--signing)) — combine with `encrypt` for confidentiality + integrity
 - **Undo / redo** — `history: n` keeps the last *n* values in memory; `undo()` / `redo()` navigate them (not persisted across reloads)
 - **Debounce & throttle** — `debounce` coalesces writes after a pause; `throttle` guarantees a write at most every *n* ms during continuous changes (a slider, a drag)
 - **Resilient writes** — on `QuotaExceededError`, sweeps this adapter's own expired-TTL entries and retries once; opt into `evictOnQuota` to additionally evict the least-recently-written *other* keys. Non-quota write errors are reported via `onError`, not thrown from inside a reactive callback
@@ -154,7 +154,7 @@ useStorage<T>(key: string, options: StorageOptions<T>): UseStorageReturn<T>
 | `migrations` | `Migration[]` | `[]` | Migration functions run when stored version differs from `version` |
 | `encrypt` | `boolean \| EncryptOptions` | `false` | Enable AES-GCM encryption |
 | `compress` | `boolean \| CompressOptions` | `false` | Compress the stored envelope via the Compression Streams API. Applied before `encrypt`, so compression still works on the plaintext (compressed ciphertext yields no size benefit) |
-| `sign` | `boolean \| SignOptions` | `false` | HMAC-SHA256 integrity check, applied as the outermost layer (wraps compressed/encrypted data too). Detects tampering without requiring secrecy — combine with `encrypt` for both |
+| `sign` | `boolean \| SignOptions` | `false` | HMAC-SHA256 check, applied as the outermost layer (wraps compressed/encrypted data too). Detects *accidental* corruption without requiring secrecy — not a defense against a user editing their own storage (see [Corruption detection](#corruption-detection--signing)) — combine with `encrypt` for both |
 | `sync` | `boolean \| SyncOptions` | `false` | Enable cross-tab sync via `BroadcastChannel` |
 | `debounce` | `number` | — | Coalesce writes: only persist `debounce` ms after the last change. Mutually exclusive with `throttle` (throttle wins if both are set) |
 | `throttle` | `number` | — | Write at most once every `throttle` ms even during continuous changes, instead of only after they stop |
@@ -417,9 +417,9 @@ await rotateEncryptedKey(
 
 `reencrypt(raw, oldOpts, newOpts)` does the same thing at the string level (decrypt + re-encrypt), if you're not going through a `StorageAdapter`.
 
-### Integrity without secrecy — signing
+### Corruption detection — signing
 
-`sign` adds an HMAC-SHA256 check without encrypting the value — the data stays plainly readable, but any tampering is detected on the next read. Useful for values that aren't secret but shouldn't be silently edited (a promo code, a feature flag, a cached entitlement):
+`sign` appends an HMAC-SHA256 check without encrypting the value — the data stays plainly readable, but on the next read, `useStorage()` verifies it still matches what was written and reports `{ type: 'signature-invalid', key }` via `onError` (falling back to `defaultValue`) if it doesn't:
 
 ```ts
 const { value: plan } = useStorage('subscription-tier', {
@@ -428,7 +428,9 @@ const { value: plan } = useStorage('subscription-tier', {
 })
 ```
 
-Combine `sign` with `encrypt` for confidentiality *and* integrity — signing wraps the outermost layer, so it covers the ciphertext too:
+**This is not a security boundary against a user who controls their own browser.** Whatever key `sign` uses — a password baked into your JS, or even a `CryptoKey` your own code holds a reference to — is reachable by anyone who opens DevTools on your page: they can read it straight out of the bundle or out of memory, and forge a signature that verifies just fine. Client-side JavaScript has no way to stop someone from editing their own browser's storage, with or without this option — don't rely on `sign` (or `encrypt`, for that matter) to enforce that.
+
+What `sign` *is* useful for: catching *accidental* corruption — a bug elsewhere in your app writing malformed data to the same key, storage shared with code that shouldn't touch it, a race in cross-tab sync, or storage-layer flakiness in a particular browser. Combine with `encrypt` if you also need confidentiality — signing wraps the outermost layer, so it covers the ciphertext too:
 
 ```ts
 const { value } = useStorage('vault', {
@@ -437,10 +439,6 @@ const { value } = useStorage('vault', {
   sign: { password: 'sign-pw' }, // can be a different password/key than encrypt
 })
 ```
-
-A failed signature check reports `{ type: 'signature-invalid', key }` via `onError` and falls back to `defaultValue`, the same way a decrypt failure does.
-
-Like `encrypt`, this only protects against someone who doesn't know the password/key — a browser extension or DevTools console running as the app itself can read the password out of memory (or wherever the app sourced it from) just as easily as it can read the stored value. Signing detects an *outside* editor of the raw storage entry, not a compromised or malicious instance of your own app.
 
 Standalone `sign()` / `verify()` are also exported from `/crypto`, mirroring `encrypt()` / `decrypt()`.
 
@@ -1101,7 +1099,7 @@ The package ships as tree-shakeable ESM (`dist/index.js`) and CommonJS (`dist/in
 | Export / Import | `exportStorage()` / `importStorage()` — snapshot and restore all keys |
 | Shared instance cache | Two components (Vue *or* React) calling `useStorage('key')` share one underlying engine — zero duplicated watchers/timers |
 | Devtools inspector + timeline | `/devtools` entry point — `setupDevtools(app)`, sees Vue and React instances alike |
-| HMAC signing | `sign: { password }` option — tamper detection without requiring secrecy |
+| HMAC signing | `sign: { password }` option — accidental-corruption detection without requiring secrecy |
 | Undo / redo | `history: n` option — in-memory `undo()`/`redo()`, no extra state management needed |
 | Throttle | `throttle` option, alongside `debounce` |
 | Quota-exceeded recovery | Automatic TTL sweep + retry; optional `evictOnQuota` for LRU-style eviction of other keys |
