@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { effectScope, nextTick } from 'vue'
 import { useCookie } from '../composables/useCookie'
 

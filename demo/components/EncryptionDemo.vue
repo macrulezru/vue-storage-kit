@@ -40,6 +40,42 @@ async function readBack() {
   }
   busy.value = false
 }
+
+// ── Key rotation — re-encrypt existing stored data under a new password ──────
+const newPassword = ref('a-brand-new-password')
+const rotateStatus = ref('')
+const rotateBusy = ref(false)
+
+async function rotateKey() {
+  rotateBusy.value = true
+  rotateStatus.value = ''
+  try {
+    const { rotateEncryptedKey, decrypt } = await import('vue-storage-kit/crypto')
+    await rotateEncryptedKey(
+      'local',
+      'demo:encrypted',
+      { password: password.value, iterations: 10_000 },
+      { password: newPassword.value, iterations: 10_000 },
+    )
+
+    const raw = localStorage.getItem('demo:encrypted')!
+    const oldStillWorks = await decrypt(raw, { password: password.value, iterations: 10_000 })
+      .then(() => true).catch(() => false)
+    const newWorks = await decrypt(raw, { password: newPassword.value, iterations: 10_000 })
+      .then(() => true).catch(() => false)
+
+    password.value = newPassword.value
+    rawInStorage.value = raw
+    rotateStatus.value = oldStillWorks
+      ? '⚠️ old password still decrypts it — something is wrong'
+      : newWorks
+        ? '✓ rotated — old password now fails, new password works'
+        : '⚠️ new password does not decrypt it — something is wrong'
+  } catch (e) {
+    rotateStatus.value = `Error: ${e}`
+  }
+  rotateBusy.value = false
+}
 </script>
 
 <template>
@@ -81,6 +117,29 @@ async function readBack() {
       <div class="card-title">Decrypted value (round-trip verified)</div>
       <div style="font-size:1.1rem;font-weight:600;padding:0.5rem 0">{{ decrypted }}</div>
       <div class="badge badge-green">✓ Round-trip successful</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Key rotation — rotateEncryptedKey()</div>
+      <p style="font-size:0.82rem;color:var(--muted);margin-bottom:0.5rem">
+        Save a value above first. This re-encrypts the value already sitting in storage under a
+        new password, without ever exposing the plaintext to the caller.
+      </p>
+      <div class="row">
+        <label>New password</label>
+        <input v-model="newPassword" type="password" style="flex:1" />
+      </div>
+      <div class="row">
+        <button @click="rotateKey" :disabled="rotateBusy || !rawInStorage">Rotate key</button>
+        <span v-if="rotateBusy" style="font-size:0.8rem;color:var(--muted)">Working…</span>
+      </div>
+      <div v-if="rotateStatus" class="badge" :class="rotateStatus.startsWith('✓') ? 'badge-green' : 'badge-red'" style="margin-top:0.5rem">
+        {{ rotateStatus }}
+      </div>
+      <pre style="margin-top:0.5rem">await rotateEncryptedKey(
+  'local', 'demo:encrypted',
+  { password: oldPassword }, { password: newPassword },
+)</pre>
     </div>
 
     <div class="card">

@@ -11,15 +11,15 @@ export class TTLManager {
     return Date.now() + ttl
   }
 
-  static cleanExpired(adapter: StorageAdapter, prefix = ''): void {
-    for (const key of adapter.keys()) {
+  static async cleanExpired(adapter: StorageAdapter, prefix = ''): Promise<void> {
+    for (const key of await adapter.keys()) {
       if (prefix && !key.startsWith(prefix)) continue
-      const raw = adapter.getItem(key)
+      const raw = await adapter.getItem(key)
       if (!raw) continue
       try {
         const envelope = JSON.parse(raw) as { exp?: number | null }
         if (envelope.exp != null && TTLManager.isExpired(envelope.exp)) {
-          adapter.removeItem(key)
+          await adapter.removeItem(key)
         }
       } catch {
         // not an envelope — skip
@@ -27,8 +27,8 @@ export class TTLManager {
     }
   }
 
-  static getExpiry(adapter: StorageAdapter, key: string): Date | null {
-    const raw = adapter.getItem(key)
+  static async getExpiry(adapter: StorageAdapter, key: string): Promise<Date | null> {
+    const raw = await adapter.getItem(key)
     if (!raw) return null
     try {
       const envelope = JSON.parse(raw) as { exp?: number | null }

@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest'
-import { encrypt, decrypt } from '../crypto/StorageEncryption'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { encrypt, decrypt, reencrypt, rotateEncryptedKey } from '../crypto/StorageEncryption'
+import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
+import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
 
 describe('StorageEncryption', () => {
   const opts = { password: 'test-password-123', iterations: 1000 }
@@ -45,5 +47,48 @@ describe('StorageEncryption', () => {
     const ciphertext = await encrypt('data', { key })
     const result = await decrypt(ciphertext, { key })
     expect(result).toBe('data')
+  })
+
+  describe('reencrypt', () => {
+    it('re-encrypts under a new password, preserving the plaintext', async () => {
+      const oldOpts = { password: 'old-pw', iterations: 1000 }
+      const newOpts = { password: 'new-pw', iterations: 1000 }
+
+      const ciphertext = await encrypt('rotate-me', oldOpts)
+      const rotated = await reencrypt(ciphertext, oldOpts, newOpts)
+
+      expect(rotated).not.toBe(ciphertext)
+      await expect(decrypt(rotated, oldOpts)).rejects.toThrow()
+      expect(await decrypt(rotated, newOpts)).toBe('rotate-me')
+    })
+  })
+
+  describe('rotateEncryptedKey', () => {
+    let adapter: MemoryStorageAdapter
+
+    beforeEach(() => {
+      adapter = new MemoryStorageAdapter()
+      StorageAdapterFactory._reset()
+      vi.spyOn(StorageAdapterFactory, 'get').mockReturnValue(adapter)
+    })
+
+    it('rewrites the stored value under the new password', async () => {
+      const oldOpts = { password: 'old-pw', iterations: 1000 }
+      const newOpts = { password: 'new-pw', iterations: 1000 }
+
+      const ciphertext = await encrypt('stored-secret', oldOpts)
+      await adapter.setItem('secret-key', ciphertext)
+
+      await rotateEncryptedKey('memory', 'secret-key', oldOpts, newOpts)
+
+      const raw = await adapter.getItem('secret-key')
+      expect(raw).not.toBe(ciphertext)
+      expect(await decrypt(raw!, newOpts)).toBe('stored-secret')
+    })
+
+    it('is a no-op when the key is absent', async () => {
+      await rotateEncryptedKey('memory', 'missing', { password: 'a' }, { password: 'b' })
+      expect(await adapter.getItem('missing')).toBeNull()
+    })
   })
 })

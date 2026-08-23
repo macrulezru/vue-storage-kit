@@ -1,4 +1,4 @@
-import type { EncryptOptions } from '../core/types'
+import type { EncryptOptions, StorageTarget } from '../core/types'
 
 // Cache derived keys to avoid re-running PBKDF2 on every write.
 // Key: "password:iterations:base64(salt)" — unique per (password, salt) pair.
@@ -78,4 +78,42 @@ export async function decrypt(raw: string, opts: EncryptOptions): Promise<string
   const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext)
 
   return new TextDecoder().decode(plaintext)
+}
+
+/**
+ * Re-encrypts a string produced by encrypt() under a new password/key —
+ * decrypts with `oldOpts`, encrypts the resulting plaintext with `newOpts`.
+ * Use to rotate a password/key without knowing anything about what's
+ * "inside" (e.g. useStorage()'s compressed-then-encrypted envelope): this
+ * only touches the outermost encryption layer.
+ */
+export async function reencrypt(
+  raw: string,
+  oldOpts: EncryptOptions,
+  newOpts: EncryptOptions,
+): Promise<string> {
+  const plaintext = await decrypt(raw, oldOpts)
+  return encrypt(plaintext, newOpts)
+}
+
+/**
+ * Rotates the encryption key/password for a single key already stored via
+ * useStorage({ encrypt: oldOpts }) — reads the raw stored value, re-encrypts
+ * it under `newOpts`, and writes it back. No-op if the key isn't present.
+ *
+ * Run this once (e.g. on app start after prompting for a new password)
+ * before switching `useStorage()` callers over to `newOpts`.
+ */
+export async function rotateEncryptedKey(
+  target: StorageTarget,
+  key: string,
+  oldOpts: EncryptOptions,
+  newOpts: EncryptOptions,
+): Promise<void> {
+  const { StorageAdapterFactory } = await import('../adapters/StorageAdapterFactory')
+  const adapter = StorageAdapterFactory.get(target)
+  const raw = await adapter.getItem(key)
+  if (raw === null) return
+  const rotated = await reencrypt(raw, oldOpts, newOpts)
+  await adapter.setItem(key, rotated)
 }

@@ -1,6 +1,6 @@
 {
   "name": "vue-storage-kit",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Reactive storage for Vue 3 over localStorage, sessionStorage, IndexedDB and cookies — TTL, AES-GCM encryption, migrations and cross-tab sync.",
   "author": "macrulez <macrulezru@gmail.com> (https://macrulez.ru/en)",
   "license": "MIT",
@@ -26,35 +26,50 @@
   ],
   "type": "module",
   "main": "./dist/index.cjs",
-  "module": "./dist/index.mjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
+      "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
     "./crypto": {
       "types": "./dist/crypto.d.ts",
-      "import": "./dist/crypto.mjs",
+      "import": "./dist/crypto.js",
       "require": "./dist/crypto.cjs"
     },
     "./sync": {
       "types": "./dist/sync.d.ts",
-      "import": "./dist/sync.mjs",
+      "import": "./dist/sync.js",
       "require": "./dist/sync.cjs"
     },
     "./pinia": {
       "types": "./dist/pinia.d.ts",
-      "import": "./dist/pinia.mjs",
+      "import": "./dist/pinia.js",
       "require": "./dist/pinia.cjs"
     },
     "./compress": {
       "types": "./dist/compress.d.ts",
-      "import": "./dist/compress.mjs",
+      "import": "./dist/compress.js",
       "require": "./dist/compress.cjs"
     },
-    "./nuxt": "./dist/nuxt/module.mjs"
+    "./devtools": {
+      "types": "./dist/devtools.d.ts",
+      "import": "./dist/devtools.js",
+      "require": "./dist/devtools.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "require": "./dist/react.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.cjs"
+    },
+    "./nuxt": "./dist/nuxt/module.js"
   },
   "files": [
     "dist",
@@ -72,15 +87,21 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "demo": "vite --config vite.demo.config.ts",
-    "prepublishOnly": "npm run build && npm run typecheck",
+    "verify-pack": "node scripts/verify-pack.mjs",
+    "prepublishOnly": "npm run build && npm run typecheck && npm run verify-pack",
     "lint": "eslint . --ext .vue,.js,.jsx,.ts,.tsx --fix",
     "format": "prettier --write src/",
     "lint:style": "stylelint \"src/**/*.{css,scss,vue}\""
   },
+  "dependencies": {
+    "@vue/devtools-api": "^7.0.0"
+  },
   "peerDependencies": {
+    "@nuxt/kit": ">=3.0.0",
+    "h3": "^1.0.0",
     "pinia": "^2.0.0 || ^3.0.0",
-    "vue": "^3.3.0",
-    "@nuxt/kit": ">=3.0.0"
+    "react": "^18.0.0",
+    "vue": "^3.3.0"
   },
   "peerDependenciesMeta": {
     "@nuxt/kit": {
@@ -88,11 +109,24 @@
     },
     "pinia": {
       "optional": true
+    },
+    "h3": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@nuxt/kit": "^3.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^26.2.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-vue": "^6.0.7",
     "@vitest/coverage-v8": "^2.0.0",
     "@vue/test-utils": "^2.4.0",
@@ -100,10 +134,13 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-vue": "^10.9.1",
     "globals": "^17.6.0",
+    "h3": "^1.15.11",
     "happy-dom": "^14.0.0",
     "pinia": "^3.0.4",
     "postcss-html": "^1.8.1",
     "prettier": "^3.8.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "stylelint": "^17.12.0",
     "stylelint-config-standard": "^40.0.0",
     "tsup": "^8.0.0",

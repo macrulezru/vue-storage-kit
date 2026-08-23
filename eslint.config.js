@@ -34,6 +34,14 @@ export default tseslint.config(
     },
   },
 
+  // Node scripts (build/publish tooling)
+  {
+    files: ['scripts/**/*.{js,mjs,cjs}'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+  },
+
   // Test files
   {
     files: ['src/__tests__/**/*.ts'],

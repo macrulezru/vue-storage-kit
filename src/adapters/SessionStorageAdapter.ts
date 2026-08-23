@@ -1,19 +1,19 @@
 import type { StorageAdapter } from '../core/types'
 
 export class SessionStorageAdapter implements StorageAdapter {
-  getItem(key: string): string | null {
+  async getItem(key: string): Promise<string | null> {
     return window.sessionStorage.getItem(key)
   }
 
-  setItem(key: string, val: string): void {
+  async setItem(key: string, val: string): Promise<void> {
     window.sessionStorage.setItem(key, val)
   }
 
-  removeItem(key: string): void {
+  async removeItem(key: string): Promise<void> {
     window.sessionStorage.removeItem(key)
   }
 
-  keys(): string[] {
+  async keys(): Promise<string[]> {
     return Object.keys(window.sessionStorage)
   }
 }

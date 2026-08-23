@@ -1,8 +1,6 @@
-export type CompressionAlgorithm = 'gzip' | 'deflate' | 'deflate-raw'
+import type { CompressOptions, CompressionAlgorithm } from '../core/types'
 
-export interface CompressOptions {
-  algorithm?: CompressionAlgorithm
-}
+export type { CompressOptions, CompressionAlgorithm }
 
 const MAGIC = 'vsk:'
 
@@ -36,7 +34,7 @@ export async function compress(data: string, opts: CompressOptions = {}): Promis
   return `${MAGIC}${algorithm}:${btoa(binary)}`
 }
 
-export async function decompress(data: string, opts: CompressOptions = {}): Promise<string> {
+export async function decompress(data: string, _opts: CompressOptions = {}): Promise<string> {
   if (!data.startsWith(MAGIC)) return data
 
   const withoutMagic = data.slice(MAGIC.length)
@@ -66,9 +64,9 @@ export function isCompressed(data: string): boolean {
 }
 
 // ─── Compressed storage adapter wrapper ──────────────────────────────────────
-// Wraps any sync StorageAdapter, compressing values on write and decompressing
-// on read. Initial decompression is async; use getDecompressed() instead of
-// the standard getItem() when you need the original value.
+// Wraps any StorageAdapter; getItem()/setItem() pass values through
+// untouched (compression is opt-in per call). Use setCompressed() /
+// getDecompressed() to actually compress on write / decompress on read.
 
 import type { StorageAdapter } from '../core/types'
 
@@ -78,30 +76,30 @@ export class CompressAdapter implements StorageAdapter {
     private readonly opts: CompressOptions = {},
   ) {}
 
-  getItem(key: string): string | null {
+  getItem(key: string): Promise<string | null> {
     return this.inner.getItem(key)
   }
 
   async getDecompressed(key: string): Promise<string | null> {
-    const raw = this.inner.getItem(key)
+    const raw = await this.inner.getItem(key)
     if (raw === null) return null
     return decompress(raw, this.opts)
   }
 
-  setItem(key: string, val: string): void {
-    this.inner.setItem(key, val)
+  setItem(key: string, val: string): Promise<void> {
+    return this.inner.setItem(key, val)
   }
 
   async setCompressed(key: string, val: string): Promise<void> {
     const compressed = await compress(val, this.opts)
-    this.inner.setItem(key, compressed)
+    await this.inner.setItem(key, compressed)
   }
 
-  removeItem(key: string): void {
-    this.inner.removeItem(key)
+  removeItem(key: string): Promise<void> {
+    return this.inner.removeItem(key)
   }
 
-  keys(): string[] {
+  keys(): Promise<string[]> {
     return this.inner.keys()
   }
 }

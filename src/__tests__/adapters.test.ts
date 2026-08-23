@@ -2,7 +2,23 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
 import { LocalStorageAdapter } from '../adapters/LocalStorageAdapter'
 import { SessionStorageAdapter } from '../adapters/SessionStorageAdapter'
+import { IndexedDBStorageAdapter } from '../adapters/IndexedDBStorageAdapter'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
+
+// happy-dom does not implement IndexedDB — mock the underlying IndexedDBAdapter
+// with an in-memory Map store, same approach as useIndexedDB.test.ts.
+vi.mock('../adapters/IndexedDBAdapter', () => {
+  const makeStore = () => {
+    const store = new Map<string, unknown>()
+    return {
+      get: vi.fn(async (key: IDBValidKey) => store.get(String(key)) ?? null),
+      set: vi.fn(async (key: IDBValidKey, val: unknown) => { store.set(String(key), val) }),
+      delete: vi.fn(async (key: IDBValidKey) => { store.delete(String(key)) }),
+      keys: vi.fn(async () => [...store.keys()]),
+    }
+  }
+  return { IndexedDBAdapter: vi.fn().mockImplementation(makeStore) }
+})
 
 function makeFakeStorage(): Storage {
   const store = new Map<string, string>()
@@ -30,31 +46,31 @@ describe('MemoryStorageAdapter', () => {
     adapter = new MemoryStorageAdapter()
   })
 
-  it('returns null for missing keys', () => {
-    expect(adapter.getItem('x')).toBeNull()
+  it('returns null for missing keys', async () => {
+    expect(await adapter.getItem('x')).toBeNull()
   })
 
-  it('stores and retrieves values', () => {
-    adapter.setItem('k', 'v')
-    expect(adapter.getItem('k')).toBe('v')
+  it('stores and retrieves values', async () => {
+    await adapter.setItem('k', 'v')
+    expect(await adapter.getItem('k')).toBe('v')
   })
 
-  it('removes a key', () => {
-    adapter.setItem('k', 'v')
-    adapter.removeItem('k')
-    expect(adapter.getItem('k')).toBeNull()
+  it('removes a key', async () => {
+    await adapter.setItem('k', 'v')
+    await adapter.removeItem('k')
+    expect(await adapter.getItem('k')).toBeNull()
   })
 
-  it('lists all keys', () => {
-    adapter.setItem('a', '1')
-    adapter.setItem('b', '2')
-    expect(adapter.keys()).toEqual(expect.arrayContaining(['a', 'b']))
+  it('lists all keys', async () => {
+    await adapter.setItem('a', '1')
+    await adapter.setItem('b', '2')
+    expect(await adapter.keys()).toEqual(expect.arrayContaining(['a', 'b']))
   })
 
-  it('clears all entries', () => {
-    adapter.setItem('a', '1')
+  it('clears all entries', async () => {
+    await adapter.setItem('a', '1')
     adapter.clear()
-    expect(adapter.keys()).toHaveLength(0)
+    expect(await adapter.keys()).toHaveLength(0)
   })
 })
 
@@ -71,25 +87,25 @@ describe('LocalStorageAdapter', () => {
     vi.unstubAllGlobals()
   })
 
-  it('returns null for missing key', () => {
-    expect(adapter.getItem('missing')).toBeNull()
+  it('returns null for missing key', async () => {
+    expect(await adapter.getItem('missing')).toBeNull()
   })
 
-  it('stores and retrieves a value', () => {
-    adapter.setItem('hello', 'world')
-    expect(adapter.getItem('hello')).toBe('world')
+  it('stores and retrieves a value', async () => {
+    await adapter.setItem('hello', 'world')
+    expect(await adapter.getItem('hello')).toBe('world')
   })
 
-  it('removes a key', () => {
-    adapter.setItem('k', 'v')
-    adapter.removeItem('k')
-    expect(adapter.getItem('k')).toBeNull()
+  it('removes a key', async () => {
+    await adapter.setItem('k', 'v')
+    await adapter.removeItem('k')
+    expect(await adapter.getItem('k')).toBeNull()
   })
 
-  it('lists stored keys', () => {
-    adapter.setItem('a', '1')
-    adapter.setItem('b', '2')
-    expect(adapter.keys()).toEqual(expect.arrayContaining(['a', 'b']))
+  it('lists stored keys', async () => {
+    await adapter.setItem('a', '1')
+    await adapter.setItem('b', '2')
+    expect(await adapter.keys()).toEqual(expect.arrayContaining(['a', 'b']))
   })
 })
 
@@ -106,25 +122,54 @@ describe('SessionStorageAdapter', () => {
     vi.unstubAllGlobals()
   })
 
-  it('returns null for missing key', () => {
-    expect(adapter.getItem('missing')).toBeNull()
+  it('returns null for missing key', async () => {
+    expect(await adapter.getItem('missing')).toBeNull()
   })
 
-  it('stores and retrieves a value', () => {
-    adapter.setItem('foo', 'bar')
-    expect(adapter.getItem('foo')).toBe('bar')
+  it('stores and retrieves a value', async () => {
+    await adapter.setItem('foo', 'bar')
+    expect(await adapter.getItem('foo')).toBe('bar')
   })
 
-  it('removes a key', () => {
-    adapter.setItem('x', 'y')
-    adapter.removeItem('x')
-    expect(adapter.getItem('x')).toBeNull()
+  it('removes a key', async () => {
+    await adapter.setItem('x', 'y')
+    await adapter.removeItem('x')
+    expect(await adapter.getItem('x')).toBeNull()
   })
 
-  it('lists stored keys', () => {
-    adapter.setItem('p', '1')
-    adapter.setItem('q', '2')
-    expect(adapter.keys()).toEqual(expect.arrayContaining(['p', 'q']))
+  it('lists stored keys', async () => {
+    await adapter.setItem('p', '1')
+    await adapter.setItem('q', '2')
+    expect(await adapter.keys()).toEqual(expect.arrayContaining(['p', 'q']))
+  })
+})
+
+describe('IndexedDBStorageAdapter', () => {
+  let adapter: IndexedDBStorageAdapter
+
+  beforeEach(() => {
+    adapter = new IndexedDBStorageAdapter()
+  })
+
+  it('returns null for missing key', async () => {
+    expect(await adapter.getItem('missing')).toBeNull()
+  })
+
+  it('stores and retrieves a value', async () => {
+    await adapter.setItem('a', '1')
+    expect(await adapter.getItem('a')).toBe('1')
+  })
+
+  it('removes a key', async () => {
+    await adapter.setItem('a', '1')
+    await adapter.removeItem('a')
+    expect(await adapter.getItem('a')).toBeNull()
+  })
+
+  it('lists stored keys', async () => {
+    await adapter.setItem('a', '1')
+    await adapter.setItem('b', '2')
+    expect(await adapter.keys()).toEqual(expect.arrayContaining(['a', 'b']))
   })
 })
 
@@ -144,8 +189,9 @@ describe('StorageAdapterFactory', () => {
     expect(a).toBe(b)
   })
 
-  it('throws for indexeddb target', () => {
-    expect(() => StorageAdapterFactory.get('indexeddb')).toThrow()
+  it('returns an IndexedDBStorageAdapter for indexeddb target', () => {
+    const adapter = StorageAdapterFactory.get('indexeddb')
+    expect(adapter).toBeInstanceOf(IndexedDBStorageAdapter)
   })
 
   it('returns a defined adapter for "local" target', () => {

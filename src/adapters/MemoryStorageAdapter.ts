@@ -3,19 +3,19 @@ import type { StorageAdapter } from '../core/types'
 export class MemoryStorageAdapter implements StorageAdapter {
   private store = new Map<string, string>()
 
-  getItem(key: string): string | null {
+  async getItem(key: string): Promise<string | null> {
     return this.store.get(key) ?? null
   }
 
-  setItem(key: string, val: string): void {
+  async setItem(key: string, val: string): Promise<void> {
     this.store.set(key, val)
   }
 
-  removeItem(key: string): void {
+  async removeItem(key: string): Promise<void> {
     this.store.delete(key)
   }
 
-  keys(): string[] {
+  async keys(): Promise<string[]> {
     return [...this.store.keys()]
   }
 

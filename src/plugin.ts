@@ -17,6 +17,11 @@ export function getGlobalOptions(): VueStoragePluginOptions {
   return _globalOptions
 }
 
+// Exposed for testing only
+export function _resetGlobalOptions(): void {
+  _globalOptions = {}
+}
+
 export const VueStoragePlugin = {
   install(app: App, options: VueStoragePluginOptions = {}): void {
     _globalOptions = options

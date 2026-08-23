@@ -4,7 +4,8 @@ import type { StorageTarget } from '../core/types'
 
 export interface UseStorageKeysReturn {
   keys: Ref<string[]>
-  refresh(): void
+  isReady: Ref<boolean>
+  refresh(): Promise<void>
 }
 
 export function useStorageKeys(
@@ -13,20 +14,25 @@ export function useStorageKeys(
 ): UseStorageKeysReturn {
   const adapter = StorageAdapterFactory.get(target)
 
-  function getKeys(): string[] {
-    return adapter.keys().filter((k) => k.startsWith(prefix))
+  async function getKeys(): Promise<string[]> {
+    const all = await adapter.keys()
+    return all.filter((k) => k.startsWith(prefix))
   }
 
-  const keys = ref<string[]>(getKeys())
+  const keys = ref<string[]>([])
+  const isReady = ref(false)
 
-  function refresh(): void {
-    keys.value = getKeys()
+  async function refresh(): Promise<void> {
+    keys.value = await getKeys()
+    isReady.value = true
   }
+
+  void refresh()
 
   // Re-scan on storage events from other tabs
   function onStorage(e: StorageEvent): void {
     if (e.key === null || e.key.startsWith(prefix)) {
-      refresh()
+      void refresh()
     }
   }
 
@@ -37,5 +43,5 @@ export function useStorageKeys(
     }
   }
 
-  return { keys, refresh }
+  return { keys, isReady, refresh }
 }

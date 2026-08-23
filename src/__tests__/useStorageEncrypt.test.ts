@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { effectScope, nextTick } from 'vue'
+import { effectScope } from 'vue'
 import { useStorage, _clearInstanceCache } from '../composables/useStorage'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
@@ -37,7 +37,7 @@ describe('useStorage + encrypt', () => {
     value.value = 'sensitive-data'
     await new Promise((r) => setTimeout(r, 50))
 
-    const raw = adapter.getItem('secret')
+    const raw = await adapter.getItem('secret')
     expect(raw).not.toBeNull()
     // Raw value must not contain the plain text
     expect(raw).not.toContain('sensitive-data')

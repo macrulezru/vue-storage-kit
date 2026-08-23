@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useIDBRef, useIndexedDB } from 'vue-storage-kit'
+import { useIDBRef, useIndexedDB, useStorage } from 'vue-storage-kit'
 
 // ── useIDBRef — single reactive value backed by IDB ───────────────────────────
 const { value: note, isReady: noteReady } = useIDBRef<string>('demo-db', 'notes', 'main-note', '')
+
+// ── useStorage({ target: 'indexeddb' }) — same pipeline as local/session/memory ──
+const { value: idbCount, isReady: idbCountReady, expiry: idbCountExpiry } = useStorage('demo:idb-counter', {
+  defaultValue: 0,
+  target: 'indexeddb',
+  ttl: 5 * 60_000,
+})
 
 // ── useIndexedDB — low-level CRUD ─────────────────────────────────────────────
 const idb = useIndexedDB<string>('demo-db', 'kv-store')
@@ -50,6 +57,30 @@ loadEntries()
       watch it like any local state. <code>useIndexedDB</code> exposes a promise-based CRUD API
       for more complex scenarios.
     </p>
+
+    <!-- useStorage target: indexeddb -->
+    <div class="card">
+      <div class="card-title">useStorage({ target: 'indexeddb' }) — TTL, migrations, encrypt & compress all work here too</div>
+      <div v-if="!idbCountReady" style="color:var(--muted)">Connecting…</div>
+      <template v-else>
+        <div class="row" style="align-items:center;gap:1rem">
+          <div style="text-align:center">
+            <div style="font-size:2.5rem;font-weight:700;line-height:1">{{ idbCount }}</div>
+            <div style="font-size:0.75rem;color:var(--muted)">count</div>
+          </div>
+          <div style="flex:1">
+            <button @click="idbCount++" style="width:100%;padding:0.75rem">+1 (stored in IndexedDB)</button>
+          </div>
+        </div>
+        <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">
+          Backed by IndexedDB db <code>vue-storage-kit</code>, store <code>kv</code> — the same
+          <code>useStorage()</code> API as local/session/memory, with a 5-minute TTL
+          (expires {{ idbCountExpiry ? idbCountExpiry.toLocaleTimeString() : '—' }}).
+          For custom databases/stores/indexes, use <code>useIndexedDB()</code> below instead.
+        </p>
+      </template>
+      <pre style="margin-top:0.5rem">useStorage('counter', { target: 'indexeddb', ttl: 5 * 60_000 })</pre>
+    </div>
 
     <!-- useIDBRef -->
     <div class="card">

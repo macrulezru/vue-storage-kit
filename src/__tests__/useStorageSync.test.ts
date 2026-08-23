@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { effectScope, nextTick } from 'vue'
+import { effectScope } from 'vue'
 import { useStorage, _clearInstanceCache } from '../composables/useStorage'
 import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
@@ -131,7 +131,8 @@ describe('useStorage + sync', () => {
 
     await new Promise((r) => setTimeout(r, 50))
     value.value = 'broadcast-test'
-    await new Promise((r) => setTimeout(r, 50))
+    // Wait comfortably past TabSync's default 50ms broadcast debounce window.
+    await new Promise((r) => setTimeout(r, 100))
 
     expect(received.length).toBeGreaterThan(0)
     const msg = received[0]

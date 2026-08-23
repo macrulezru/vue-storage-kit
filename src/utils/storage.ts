@@ -27,39 +27,41 @@ export async function getStorageQuota(): Promise<StorageQuota> {
 
 export type StorageSnapshot = Record<string, string>
 
-export function exportStorage(target: StorageTarget = 'local', prefix = ''): StorageSnapshot {
+export async function exportStorage(
+  target: StorageTarget = 'local',
+  prefix = '',
+): Promise<StorageSnapshot> {
   const adapter = StorageAdapterFactory.get(target)
   const result: StorageSnapshot = {}
-  for (const key of adapter.keys()) {
+  for (const key of await adapter.keys()) {
     if (!prefix || key.startsWith(prefix)) {
-      const val = adapter.getItem(key)
+      const val = await adapter.getItem(key)
       if (val !== null) result[key] = val
     }
   }
   return result
 }
 
-export function importStorage(
+export async function importStorage(
   snapshot: StorageSnapshot,
   target: StorageTarget = 'local',
   options: { overwrite?: boolean } = {},
-): void {
+): Promise<void> {
   const { overwrite = true } = options
   const adapter = StorageAdapterFactory.get(target)
   for (const [key, val] of Object.entries(snapshot)) {
-    if (!overwrite && adapter.getItem(key) !== null) continue
-    adapter.setItem(key, val)
+    if (!overwrite && (await adapter.getItem(key)) !== null) continue
+    await adapter.setItem(key, val)
   }
 }
 
 // ─── Clear ────────────────────────────────────────────────────────────────────
 
-export function clearStorage(target: StorageTarget = 'local', prefix = ''): void {
+export async function clearStorage(target: StorageTarget = 'local', prefix = ''): Promise<void> {
   const adapter = StorageAdapterFactory.get(target)
-  const toRemove = prefix
-    ? adapter.keys().filter((k) => k.startsWith(prefix))
-    : adapter.keys()
+  const allKeys = await adapter.keys()
+  const toRemove = prefix ? allKeys.filter((k) => k.startsWith(prefix)) : allKeys
   for (const key of toRemove) {
-    adapter.removeItem(key)
+    await adapter.removeItem(key)
   }
 }
