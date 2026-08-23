@@ -116,12 +116,23 @@ export class StorageEngine<T> {
   // could still have that overwritten by a stale, still-debounced broadcast
   // arriving later from another tab, since TabSync's own staleness check
   // would see no prior timestamp for this key and let it through.
+  //
+  // Always updated through bumpLastAppliedTs() (monotonic — never moves
+  // backward). A disk read that resolves *after* a newer value has already
+  // been applied (e.g. a sync message accepted while the initial read was
+  // still in flight) must not regress this, or a later, merely
+  // intermediate-stale message could then slip back in underneath it.
   private lastAppliedTs = 0
+
+  private bumpLastAppliedTs(ts: number): void {
+    if (ts > this.lastAppliedTs) this.lastAppliedTs = ts
+  }
 
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private throttleTimer: ReturnType<typeof setTimeout> | null = null
   private lastWriteTime = 0
-  private pendingThrottleBox: { value: T } | undefined
+  private pendingThrottleBox: { value: T; ts: number } | undefined
+  private pendingDebounceBox: { value: T; ts: number } | undefined
 
   private disposed = false
 
@@ -234,41 +245,56 @@ export class StorageEngine<T> {
 
   setValue(newValue: T): void {
     this.hasExternalWrite = true
+    // Captured now — synchronously, before debounce/throttle/module-import
+    // delays — and bumped immediately, not just once the write actually
+    // lands. Otherwise a cross-tab message arriving *during* that delay
+    // could still pass the staleness check (lastAppliedTs wouldn't yet
+    // reflect this pending edit) and silently overwrite the optimistic
+    // local value before it's ever persisted. The same ts then rides along
+    // through scheduleWrite() so the eventual write's envelope carries the
+    // moment the value was actually decided, not when it happened to flush.
+    const ts = Date.now()
+    this.bumpLastAppliedTs(ts)
     if (this.historyLimit > 0) {
       this.historyStack.push(this.lastCommitted)
       if (this.historyStack.length > this.historyLimit) this.historyStack.shift()
       this.redoStack = []
     }
     this.applyValue(newValue)
-    this.scheduleWrite(newValue)
+    this.scheduleWrite(newValue, ts)
   }
 
   undo(): void {
     if (this.historyStack.length === 0) return
     this.hasExternalWrite = true
+    const ts = Date.now()
+    this.bumpLastAppliedTs(ts)
     const previous = this.historyStack.pop()!
     this.redoStack.push(this.lastCommitted)
     this.applyValue(previous)
-    this.scheduleWrite(previous)
+    this.scheduleWrite(previous, ts)
   }
 
   redo(): void {
     if (this.redoStack.length === 0) return
     this.hasExternalWrite = true
+    const ts = Date.now()
+    this.bumpLastAppliedTs(ts)
     const next = this.redoStack.pop()!
     this.historyStack.push(this.lastCommitted)
     if (this.historyStack.length > this.historyLimit) this.historyStack.shift()
     this.applyValue(next)
-    this.scheduleWrite(next)
+    this.scheduleWrite(next, ts)
   }
 
   remove(): void {
     this.hasExternalWrite = true
     const ts = Date.now()
-    this.lastAppliedTs = ts
+    this.bumpLastAppliedTs(ts)
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
+      this.pendingDebounceBox = undefined
     }
     if (this.throttleTimer !== null) {
       clearTimeout(this.throttleTimer)
@@ -410,7 +436,7 @@ export class StorageEngine<T> {
     }
 
     this.patchSnapshot({ expiry: envelope.exp ? new Date(envelope.exp) : null })
-    this.lastAppliedTs = envelope.ts
+    this.bumpLastAppliedTs(envelope.ts)
 
     if (envelope.v !== this.version) {
       let deserialized: unknown
@@ -433,7 +459,7 @@ export class StorageEngine<T> {
       )
       if (!result) return this.defaultValue
 
-      await this.writeToStorageInternal(result.data, result.version, false)
+      await this.writeToStorageInternal(result.data, result.version, false, Date.now())
       return result.data
     }
 
@@ -451,9 +477,9 @@ export class StorageEngine<T> {
     data: T,
     schemaVersion: number,
     broadcast: boolean,
+    ts: number,
   ): Promise<void> {
     const exp = TTLManager.computeExp(this.ttl)
-    const ts = Date.now()
     const envelope: StorageEnvelope = {
       v: schemaVersion,
       d: this.serializer.serialize(data),
@@ -495,12 +521,12 @@ export class StorageEngine<T> {
     try {
       await this.adapter.setItem(this.key, stored)
       this.patchSnapshot({ expiry: exp ? new Date(exp) : null })
-      this.lastAppliedTs = ts
+      this.bumpLastAppliedTs(ts)
     } catch (e) {
       if (e instanceof DOMException && e.name === 'QuotaExceededError') {
         const recovered = await this.recoverFromQuotaExceeded(stored, exp)
         if (recovered) {
-          this.lastAppliedTs = ts
+          this.bumpLastAppliedTs(ts)
           this.emitEvent('write', { schemaVersion, recoveredFromQuota: true })
           if (broadcast && this.tabSync) this.tabSync.broadcast(this.key, raw, ts)
           return
@@ -593,7 +619,7 @@ export class StorageEngine<T> {
     return true
   }
 
-  private async writeToStorage(data: T): Promise<void> {
+  private async writeToStorage(data: T, ts: number): Promise<void> {
     // Reserve this write's writeChain slot *synchronously*, before awaiting
     // anything — remove() also reserves its slot synchronously (it doesn't
     // wait on modulesReady at all), so if the await here came first, a
@@ -610,7 +636,7 @@ export class StorageEngine<T> {
       // (before the dynamic import()s in loadModules() settle) would
       // silently skip encryption/compression/signing instead of waiting.
       await this.modulesReady
-      return this.writeToStorageInternal(data, this.version, true)
+      return this.writeToStorageInternal(data, this.version, true, ts)
     })
     this.writeChain = task.catch(() => {})
     return task
@@ -618,36 +644,39 @@ export class StorageEngine<T> {
 
   // ─── Internal: debounce/throttle scheduling ────────────────────────────────
 
-  private scheduleWrite(data: T): void {
+  private scheduleWrite(data: T, ts: number): void {
     if (this.throttle > 0) {
-      this.pendingThrottleBox = { value: data }
+      this.pendingThrottleBox = { value: data, ts }
       const now = Date.now()
       const elapsed = now - this.lastWriteTime
       if (elapsed >= this.throttle) {
         this.lastWriteTime = now
         this.pendingThrottleBox = undefined
-        void this.writeToStorage(data)
+        void this.writeToStorage(data, ts)
       } else if (this.throttleTimer === null) {
         this.throttleTimer = setTimeout(() => {
           this.throttleTimer = null
           this.lastWriteTime = Date.now()
           const pending = this.pendingThrottleBox
           this.pendingThrottleBox = undefined
-          if (pending) void this.writeToStorage(pending.value)
+          if (pending) void this.writeToStorage(pending.value, pending.ts)
         }, this.throttle - elapsed)
       }
       return
     }
 
     if (this.debounce <= 0) {
-      void this.writeToStorage(data)
+      void this.writeToStorage(data, ts)
       return
     }
 
+    this.pendingDebounceBox = { value: data, ts }
     if (this.debounceTimer !== null) clearTimeout(this.debounceTimer)
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null
-      void this.writeToStorage(data)
+      const pending = this.pendingDebounceBox
+      this.pendingDebounceBox = undefined
+      if (pending) void this.writeToStorage(pending.value, pending.ts)
     }, this.debounce)
   }
 
@@ -655,14 +684,16 @@ export class StorageEngine<T> {
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
-      void this.writeToStorage(this.snapshot.value)
+      const pending = this.pendingDebounceBox
+      this.pendingDebounceBox = undefined
+      if (pending) void this.writeToStorage(pending.value, pending.ts)
     }
     if (this.throttleTimer !== null) {
       clearTimeout(this.throttleTimer)
       this.throttleTimer = null
       const pending = this.pendingThrottleBox
       this.pendingThrottleBox = undefined
-      if (pending) void this.writeToStorage(pending.value)
+      if (pending) void this.writeToStorage(pending.value, pending.ts)
     }
   }
 
@@ -720,7 +751,7 @@ export class StorageEngine<T> {
             // flight, the initial read must not overwrite it once it
             // resolves (same reasoning as hasExternalWrite's declaration).
             this.hasExternalWrite = true
-            this.lastAppliedTs = envelope.ts
+            this.bumpLastAppliedTs(envelope.ts)
             this.applyValue(data)
             this.patchSnapshot({ expiry: envelope.exp ? new Date(envelope.exp) : null })
             this.emitEvent('sync-received')

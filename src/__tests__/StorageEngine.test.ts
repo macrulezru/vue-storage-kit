@@ -702,6 +702,97 @@ describe('StorageEngine — sync update racing the initial read', () => {
     engine.dispose()
   })
 
+  it('does not let the initial read regress lastAppliedTs backward, opening a window for an intermediate-stale message', async () => {
+    const gatedAdapter = new GatedAdapter()
+    vi.spyOn(StorageAdapterFactory, 'get').mockReturnValue(gatedAdapter)
+    await gatedAdapter.setItem(
+      'monotonic-race-key',
+      JSON.stringify({ v: 1, d: '"from-disk"', exp: null, ts: 1000 }),
+    )
+
+    let resolveSubscribed!: () => void
+    const subscribed = new Promise<void>((resolve) => {
+      resolveSubscribed = resolve
+    })
+    const originalSubscribe = TabSync.prototype.subscribe
+    vi.spyOn(TabSync.prototype, 'subscribe').mockImplementation(function (
+      this: TabSync,
+      key,
+      cb,
+    ) {
+      originalSubscribe.call(this, key, cb)
+      resolveSubscribed()
+    })
+
+    const engine = new StorageEngine('monotonic-race-key', {
+      defaultValue: 'default',
+      target: 'memory',
+      sync: { channel: 'monotonic-race-channel' },
+    })
+
+    await subscribed
+
+    // A newer message arrives and is accepted while the (gated) initial
+    // read of the older on-disk value (ts: 1000) is still in flight.
+    const newer = JSON.stringify({ v: 1, d: '"newer-value"', exp: null, ts: 2000 })
+    MockBroadcastChannel.deliverTo('monotonic-race-channel', {
+      key: 'monotonic-race-key',
+      value: newer,
+      ts: 2000,
+    })
+
+    // Now let the initial read (ts: 1000, older than what's already
+    // applied) resolve. lastAppliedTs must stay at 2000, not regress to
+    // 1000 — otherwise the message below would incorrectly pass the
+    // staleness check next.
+    gatedAdapter.releaseRead()
+    await engine.ready
+    expect(engine.getSnapshot().value).toBe('newer-value')
+
+    // An intermediate-stale message — older than what's already applied,
+    // but newer than the disk value the read just (correctly) discarded —
+    // must still be rejected.
+    const intermediate = JSON.stringify({ v: 1, d: '"intermediate-stale"', exp: null, ts: 1500 })
+    MockBroadcastChannel.deliverTo('monotonic-race-channel', {
+      key: 'monotonic-race-key',
+      value: intermediate,
+      ts: 1500,
+    })
+    await flush(20)
+
+    expect(engine.getSnapshot().value).toBe('newer-value')
+    engine.dispose()
+  })
+
+  it('preserves an optimistic debounced local write against an inbound message arriving before the debounce fires', async () => {
+    // setValue() bumps lastAppliedTs synchronously (before the debounced
+    // write actually lands) precisely so this can't happen: without it,
+    // an inbound message with any ts newer than whatever lastAppliedTs was
+    // *before* this edit (e.g. the initial disk read) would pass the
+    // staleness check and clobber the optimistic value while it's still
+    // waiting out the debounce window.
+    const engine = new StorageEngine('debounce-race-key', {
+      defaultValue: 'default',
+      target: 'memory',
+      debounce: 200,
+      sync: { channel: 'debounce-race-channel' },
+    })
+    await engine.ready
+
+    engine.setValue('local-edit') // debounced — not persisted for 200ms
+
+    const envelope = JSON.stringify({ v: 1, d: '"stale-remote"', exp: null, ts: Date.now() - 10 })
+    MockBroadcastChannel.deliverTo('debounce-race-channel', {
+      key: 'debounce-race-key',
+      value: envelope,
+      ts: Date.now() - 10,
+    })
+    await flush(20)
+
+    expect(engine.getSnapshot().value).toBe('local-edit')
+    engine.dispose()
+  })
+
   it('ignores a stale cross-tab message older than what was already loaded from storage', async () => {
     // As if this engine had already read this "fresher" envelope on
     // startup (ts = 1000) — TabSync's own per-key timestamp tracking never

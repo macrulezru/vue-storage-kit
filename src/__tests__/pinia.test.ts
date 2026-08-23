@@ -169,6 +169,19 @@ describe('createPiniaPersist', () => {
     expect(store.count).toBe(5)
   })
 
+  it('does not let restore clobber a mutation made in the same synchronous turn as store creation', async () => {
+    // No gate, no await between useCounter() and the mutation — this
+    // exercises Pinia's default (batched, not synchronous) $subscribe
+    // flush timing directly, unlike the gated-adapter test above which
+    // gives the subscribe callback ample real time to run first regardless.
+    await adapter.setItem('counter', JSON.stringify({ count: 42, name: 'stale' }))
+    setupPinia()
+    const store = useCounter()
+    store.count = 5
+    await flush()
+    expect(store.count).toBe(5)
+  })
+
   it('reports write-failed via onError for non-quota adapter errors', async () => {
     const boom = new Error('disk on fire')
     vi.spyOn(adapter, 'setItem').mockImplementation(() => {

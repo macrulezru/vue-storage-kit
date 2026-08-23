@@ -13,12 +13,23 @@ const { value: compressedNote, isReady: compressedNoteReady } = useStorage('demo
 // over it would only ever evaluate once and never update as the note is
 // edited. Track it as a ref, refreshed after each write settles.
 const rawCompressedNote = ref<string | null>(localStorage.getItem('demo:compressed-note'))
+
+// useStorage() writes asynchronously (module load + adapter.setItem) and
+// doesn't expose a public "write completed" signal — poll for the change
+// instead of guessing a fixed delay, so this is exact regardless of how
+// long that write actually takes.
+async function waitForCompressedNoteWrite(previous: string | null, timeoutMs = 2000): Promise<string | null> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const current = localStorage.getItem('demo:compressed-note')
+    if (current !== previous) return current
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  return localStorage.getItem('demo:compressed-note')
+}
+
 watch(compressedNote, async () => {
-  // useStorage() writes asynchronously (module load + adapter.setItem) —
-  // there's no public "write completed" signal to await here, so give it a
-  // moment before re-reading the persisted raw value.
-  await new Promise((r) => setTimeout(r, 50))
-  rawCompressedNote.value = localStorage.getItem('demo:compressed-note')
+  rawCompressedNote.value = await waitForCompressedNoteWrite(rawCompressedNote.value)
 })
 const compressedNoteSize = computed(() =>
   rawCompressedNote.value ? new TextEncoder().encode(rawCompressedNote.value).length : 0,

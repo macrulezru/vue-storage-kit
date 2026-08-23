@@ -54,6 +54,17 @@ describe('TTLManager', () => {
       const wrapped = TTLManager.wrapWithMeta('a|b|c', { exp: null, ts: 1 })
       expect(TTLManager.unwrapMeta(wrapped)).toEqual({ exp: null, ts: 1, payload: 'a|b|c' })
     })
+
+    it('rejects a header with a non-numeric exp instead of passing it through', () => {
+      expect(TTLManager.unwrapMeta('{"exp":"not-a-number","ts":1}|x')).toBeNull()
+      expect(TTLManager.unwrapMeta('{"exp":true,"ts":1}|x')).toBeNull()
+      expect(TTLManager.unwrapMeta('{"exp":{},"ts":1}|x')).toBeNull()
+    })
+
+    it('preserves exp: 0 (a valid, already-expired epoch timestamp) rather than treating it as no expiry', () => {
+      const wrapped = TTLManager.wrapWithMeta('x', { exp: 0, ts: 1 })
+      expect(TTLManager.unwrapMeta(wrapped)).toEqual({ exp: 0, ts: 1, payload: 'x' })
+    })
   })
 
   describe('cleanExpired', () => {
@@ -141,6 +152,19 @@ describe('TTLManager', () => {
       const result = await TTLManager.getExpiry(adapter, 'k')
       expect(result).toBeInstanceOf(Date)
       expect(result!.getTime()).toBe(exp)
+    })
+
+    it('returns epoch (not null) for exp: 0, both for a plain envelope and an opaque one', async () => {
+      await adapter.setItem('plain', JSON.stringify({ v: 1, d: '', exp: 0, ts: 0 }))
+      const plainResult = await TTLManager.getExpiry(adapter, 'plain')
+      expect(plainResult).toBeInstanceOf(Date)
+      expect(plainResult!.getTime()).toBe(0)
+
+      const opaque = TTLManager.wrapWithMeta('unreadable-ciphertext-blob', { exp: 0, ts: 0 })
+      await adapter.setItem('opaque', opaque)
+      const opaqueResult = await TTLManager.getExpiry(adapter, 'opaque')
+      expect(opaqueResult).toBeInstanceOf(Date)
+      expect(opaqueResult!.getTime()).toBe(0)
     })
   })
 })

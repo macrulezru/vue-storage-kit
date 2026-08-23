@@ -41,6 +41,14 @@ export class TTLManager {
     try {
       const meta = JSON.parse(raw.slice(0, sep)) as Partial<StoredMeta>
       if (typeof meta.ts !== 'number') return null
+      // Only null/undefined (→ no expiry) or an actual number are valid —
+      // anything else (e.g. a string in a corrupted header) must not
+      // silently pass through into `Date.now() > exp` comparisons
+      // downstream, where it could coerce into an always-false (never
+      // expires) or otherwise nonsensical result.
+      if (meta.exp !== null && meta.exp !== undefined && typeof meta.exp !== 'number') {
+        return null
+      }
       return { exp: meta.exp ?? null, ts: meta.ts, payload: raw.slice(sep + 1) }
     } catch {
       return null
@@ -80,11 +88,14 @@ export class TTLManager {
     if (!raw) return null
 
     const meta = TTLManager.unwrapMeta(raw)
-    if (meta) return meta.exp ? new Date(meta.exp) : null
+    if (meta) return meta.exp != null ? new Date(meta.exp) : null
 
     try {
       const envelope = JSON.parse(raw) as { exp?: number | null }
-      return envelope.exp ? new Date(envelope.exp) : null
+      // `!= null` (not a truthy check) — exp: 0 is a valid, already-expired
+      // timestamp (epoch), not "no expiry"; a truthy check would wrongly
+      // treat it as the latter.
+      return envelope.exp != null ? new Date(envelope.exp) : null
     } catch {
       return null
     }

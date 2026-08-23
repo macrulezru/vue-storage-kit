@@ -113,6 +113,16 @@ export function setupDevtools(app: App): void {
       const stopWatchingNewEngines = onEngineCreated(attachTimeline)
 
       function cleanup(): void {
+        // Removed first — whichever path triggers cleanup() first (an app
+        // unmount, or an actual page unload) must also unregister this
+        // listener, or it stays attached to `window` indefinitely; harmless
+        // per call since the rest of this function is idempotent, but it'd
+        // otherwise accumulate one leaked listener per setupDevtools(app)
+        // call whose app gets unmounted without the page ever reloading
+        // (e.g. repeated Vite HMR remounts in dev).
+        if (typeof window !== 'undefined') {
+          window.removeEventListener('beforeunload', cleanup)
+        }
         clearInterval(refreshTimer)
         stopWatchingNewEngines()
         timelineDisposers.forEach((stop) => stop())

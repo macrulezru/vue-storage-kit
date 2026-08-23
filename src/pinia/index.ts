@@ -76,24 +76,33 @@ export function createPiniaPersist(opts: PiniaPersistOptions = {}) {
       }
     })()
 
-    // Persist on every state change
-    ctx.store.$subscribe((_: SubscriptionCallbackMutation<StateTree>, state: StateTree) => {
-      hasExternalWrite = true
-      const slice = filterState(state as Record<string, unknown>, pick, omit)
-      // Wrapped in an async IIFE (rather than `adapter.setItem(...).catch()`)
-      // so a synchronous throw from a non-conforming adapter is caught too,
-      // not just a rejected promise.
-      void (async () => {
-        try {
-          await adapter.setItem(key, serializer.serialize(slice))
-        } catch (e) {
-          if (e instanceof DOMException && e.name === 'QuotaExceededError') {
-            onError?.({ type: 'quota-exceeded', key })
-          } else {
-            onError?.({ type: 'write-failed', key, error: e as Error })
+    // Persist on every state change. flush: 'sync' matters here, not just as
+    // a persistence-latency nicety: without it, Pinia batches this callback
+    // through Vue's reactivity scheduler, so a mutation made in the same
+    // synchronous turn as the store's creation isn't guaranteed to set
+    // hasExternalWrite before the restore IIFE's adapter.getItem()
+    // continuation runs — verified empirically, this really does let a
+    // same-turn mutation get silently reverted by restore otherwise.
+    ctx.store.$subscribe(
+      (_: SubscriptionCallbackMutation<StateTree>, state: StateTree) => {
+        hasExternalWrite = true
+        const slice = filterState(state as Record<string, unknown>, pick, omit)
+        // Wrapped in an async IIFE (rather than `adapter.setItem(...).catch()`)
+        // so a synchronous throw from a non-conforming adapter is caught too,
+        // not just a rejected promise.
+        void (async () => {
+          try {
+            await adapter.setItem(key, serializer.serialize(slice))
+          } catch (e) {
+            if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+              onError?.({ type: 'quota-exceeded', key })
+            } else {
+              onError?.({ type: 'write-failed', key, error: e as Error })
+            }
           }
-        }
-      })()
-    })
+        })()
+      },
+      { flush: 'sync' },
+    )
   }
 }
