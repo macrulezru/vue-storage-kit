@@ -5,6 +5,15 @@ export interface ModuleOptions {
   autoImports?: boolean
 }
 
+declare module '@nuxt/schema' {
+  interface NuxtConfig {
+    storageKit?: ModuleOptions
+  }
+  interface NuxtOptions {
+    storageKit: ModuleOptions
+  }
+}
+
 export default defineNuxtModule<ModuleOptions>({
   meta: {
     name: 'vue-storage-kit',
@@ -14,8 +23,18 @@ export default defineNuxtModule<ModuleOptions>({
   defaults: {
     autoImports: true,
   },
-  setup(options: ModuleOptions) {
+  setup(options: ModuleOptions, nuxt) {
     const resolver = createResolver(import.meta.url)
+
+    // Nuxt's own auto-reference machinery (@nuxt/kit's writeTypes) only ever references
+    // this package's root `types` entry (dist/index.d.ts) — it resolves `modules: [...]`
+    // entries back to their nearest package.json, which is the package root regardless of
+    // which subpath was actually imported. That entry never touches ModuleOptions (defined
+    // here, in dist/nuxt/module.d.ts), so nuxt.config.ts's `storageKit: {...}` block would
+    // silently type as untyped/`any` without this explicit reference.
+    nuxt.hook('prepare:types', ({ references }) => {
+      references.push({ types: 'vue-storage-kit/nuxt' })
+    })
 
     if (options.autoImports) {
       addImports([

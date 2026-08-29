@@ -1,6 +1,6 @@
 {
   "name": "vue-storage-kit",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Reactive storage for Vue 3 over localStorage, sessionStorage, IndexedDB and cookies — TTL, AES-GCM encryption, migrations and cross-tab sync.",
   "author": "macrulez <macrulezru@gmail.com> (https://macrulez.ru/en)",
   "license": "MIT",
@@ -69,7 +69,10 @@
       "import": "./dist/testing.js",
       "require": "./dist/testing.cjs"
     },
-    "./nuxt": "./dist/nuxt/module.js"
+    "./nuxt": {
+      "types": "./dist/nuxt/module.d.ts",
+      "import": "./dist/nuxt/module.js"
+    }
   },
   "files": [
     "dist",
@@ -80,7 +83,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -124,6 +127,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@nuxt/kit": "^3.0.0",
+    "@nuxt/schema": "^4.5.2",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^26.2.0",
     "@types/react": "^18.3.31",
