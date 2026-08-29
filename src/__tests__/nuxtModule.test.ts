@@ -23,11 +23,22 @@ beforeEach(() => {
   createResolver.mockClear()
 })
 
+function makeNuxt() {
+  const hooks: Record<string, ((payload: never) => void)[]> = {}
+  const nuxt = {
+    hook: (name: string, fn: (payload: never) => void) => {
+      ;(hooks[name] ??= []).push(fn)
+    },
+  }
+  return { nuxt, hooks }
+}
+
 describe('nuxt module', () => {
   it('registers the composable auto-imports and the plugin by default', async () => {
     const { default: mod } = await import('../nuxt/module')
+    const { nuxt } = makeNuxt()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(mod as any).setup({ autoImports: true }, {})
+    ;(mod as any).setup({ autoImports: true }, nuxt)
 
     expect(addImports).toHaveBeenCalledTimes(1)
     const registered = addImports.mock.calls[0][0] as Array<{ name: string; from: string }>
@@ -58,11 +69,24 @@ describe('nuxt module', () => {
   it('skips auto-imports when autoImports is false, but still registers the plugin', async () => {
     vi.resetModules()
     const { default: mod } = await import('../nuxt/module')
+    const { nuxt } = makeNuxt()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(mod as any).setup({ autoImports: false }, {})
+    ;(mod as any).setup({ autoImports: false }, nuxt)
 
     expect(addImports).not.toHaveBeenCalled()
     expect(addPlugin).toHaveBeenCalledTimes(1)
+  })
+
+  it('registers a prepare:types hook referencing the /nuxt subpath', async () => {
+    const { default: mod } = await import('../nuxt/module')
+    const { nuxt, hooks } = makeNuxt()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(mod as any).setup({ autoImports: true }, nuxt)
+
+    const payload = { references: [] as { types: string }[] }
+    for (const fn of hooks['prepare:types'] ?? []) fn(payload as never)
+
+    expect(payload.references).toContainEqual({ types: 'vue-storage-kit/nuxt' })
   })
 
   it('defaults autoImports to true and exposes the expected meta', async () => {
