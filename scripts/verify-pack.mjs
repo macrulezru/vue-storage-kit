@@ -62,7 +62,7 @@ try {
 }
 
 try {
-  const nuxtModule = await import(new URL(pkg.exports['./nuxt'], root))
+  const nuxtModule = await import(new URL(pkg.exports['./nuxt'].import, root))
   if (typeof nuxtModule.default !== 'function') {
     throw new Error('default export is not a function')
   }
