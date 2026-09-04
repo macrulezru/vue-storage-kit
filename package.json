@@ -1,6 +1,6 @@
 {
   "name": "vue-storage-kit",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Reactive storage for Vue 3 over localStorage, sessionStorage, IndexedDB and cookies — TTL, AES-GCM encryption, migrations and cross-tab sync.",
   "author": "macrulez <macrulezru@gmail.com> (https://macrulez.ru/en)",
   "license": "MIT",
