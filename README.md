@@ -72,6 +72,97 @@ const { value: theme } = useLocalStorage('theme', 'light')
 
 The value is persisted to `localStorage` and is reactive — changing `theme.value` writes to storage immediately.
 
+### More examples
+
+#### Vue
+
+**A cache that expires itself**
+
+TTL stores the expiry right inside the value's envelope — an expired key is removed automatically on the next read, no manual timers.
+
+```ts
+import { useStorage } from 'vue-storage-kit'
+
+const {
+  value: otp,
+  expiry,
+  remove,
+} = useStorage('otp', {
+  defaultValue: '',
+  ttl: 5 * 60 * 1000, // 5 minutes
+  onExpire: () => router.push('/login'),
+})
+
+console.log(expiry.value) // Date | null — when this key expires
+```
+
+**Synced across tabs**
+
+With `sync: true`, a change in one tab reaches every other open tab instantly — no server, no manual subscriptions.
+
+```ts
+import { useStorage } from 'vue-storage-kit'
+
+const { value: cart } = useStorage('cart', {
+  defaultValue: [] as CartItem[],
+  sync: true,
+})
+
+// cart.value stays in sync across every open tab automatically
+```
+
+**Stored data upgrades itself on release**
+
+A user on an old version opens the app — the migration chain brings their stored data up to the current schema and persists the result immediately, no manual version `if/else`.
+
+```ts
+import { useStorage } from 'vue-storage-kit'
+
+interface SettingsV3 {
+  theme: 'light' | 'dark'
+  locale: string
+}
+
+const { value: settings } = useStorage<SettingsV3>('settings', {
+  defaultValue: { theme: 'light', locale: 'en' },
+  version: 3,
+  migrations: [
+    { version: 2, up: (d: any) => ({ ...d, theme: d.darkMode ? 'dark' : 'light' }) },
+    { version: 3, up: (d: any) => ({ ...d, locale: d.lang ?? 'en' }) },
+  ],
+  onMigrate: (from, to) => console.log(`Migrated settings ${from} → ${to}`),
+})
+
+// A v1 user with { darkMode: true } in storage reads
+// { darkMode: true, theme: 'dark', locale: 'en' } — the migration chain
+// runs and persists automatically, on the very first read.
+```
+
+#### React
+
+**The same engine, as a React hook**
+
+The `vue-storage-kit/react` entry point exports `useStorage()` with the same options (TTL, migrations, `sync`, and the rest) as the Vue composable — just a different call shape, for React.
+
+```tsx
+import { useStorage } from 'vue-storage-kit/react'
+
+function Counter() {
+  const {
+    value: count,
+    setValue: setCount,
+    isReady,
+  } = useStorage('count', {
+    defaultValue: 0,
+    target: 'local',
+  })
+
+  if (!isReady) return <p>Loading…</p>
+
+  return <button onClick={() => setCount((c) => c + 1)}>Clicked {count} times</button>
+}
+```
+
 ---
 
 ## Documentation & links
