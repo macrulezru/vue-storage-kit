@@ -29,6 +29,17 @@ Reactive localStorage, sessionStorage, IndexedDB and cookies for Vue 3 (and Reac
 
 ---
 
+## When you'd reach for this
+
+localStorage only stores strings, silently fills up without warning, and knows nothing about other open tabs — vue-storage-kit takes those quirks off your hands and adds what plain localStorage never had: entry lifetimes, encryption, cross-tab sync, and format migrations.
+
+- **The same app is open in two tabs** — A shopper adds something to the cart in one tab and expects to see it in the other without reloading the page. Changes to storage propagate between tabs instantly, not only after a refresh.
+- **A draft shouldn't stick around forever** — A forgotten form draft or a temporary access token shouldn't sit in storage indefinitely — an entry's lifetime expires on its own, and stale data gets cleared out the next time it's read.
+- **Personal data shouldn't sit in plain text** — Anyone can open the browser's dev tools and read storage contents as plain text — sensitive values can be kept encrypted instead of relying on nobody looking.
+- **An old data shape meets a new app version** — After an update, a user's browser might still hold data shaped for a previous version of the app — it gets converted to the current shape automatically, instead of crashing or silently losing data.
+
+---
+
 ## Installation
 
 | Environment | Minimum version                                                        |
