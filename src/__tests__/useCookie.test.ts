@@ -1,11 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { effectScope, nextTick } from 'vue'
 import { useCookie } from '../composables/useCookie'
 
 function withScope<T>(fn: () => T): T {
   const scope = effectScope()
   let result!: T
-  scope.run(() => { result = fn() })
+  scope.run(() => {
+    result = fn()
+  })
   return result
 }
 
@@ -137,5 +139,20 @@ describe('useCookie', () => {
     const last = writes[writes.length - 1] ?? ''
     expect(last.toLowerCase()).toContain('samesite=strict')
     expect(last.toLowerCase()).toContain('secure')
+  })
+
+  it('warns in dev mode when httpOnly is set — document.cookie can never honor it', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    withScope(() => useCookie('http-only-cookie', { defaultValue: '', httpOnly: true }))
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy.mock.calls[0][0]).toMatch(/httpOnly/)
+    warnSpy.mockRestore()
+  })
+
+  it('does not warn when httpOnly is not set', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    withScope(() => useCookie('no-http-only-cookie', { defaultValue: '' }))
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })

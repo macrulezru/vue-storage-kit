@@ -1,9 +1,19 @@
 import { ref, watch, getCurrentScope, onScopeDispose, type Ref } from 'vue'
 import { createJSONSerializer } from '../core/serializer'
 import { parseCookieHeader, buildCookieString } from '../core/cookieUtils'
+import { isDevMode } from '../core/isDevMode'
 import type { CookieOptions } from '../core/types'
 
 export function useCookie<T>(name: string, options: CookieOptions<T>): Ref<T> {
+  if (isDevMode() && options.httpOnly) {
+    console.warn(
+      `[vue-storage-kit] useCookie("${name}") was called with \`httpOnly: true\`, but this is ` +
+        'the client-only composable — document.cookie can never set HttpOnly, browsers silently ' +
+        "ignore it from client JS, so this option has no effect here. Use the Nuxt module's " +
+        "useCookie() (SSR, via H3's setCookie()) if you need a real HttpOnly cookie.",
+    )
+  }
+
   const serializer = options.serializer ?? createJSONSerializer<T>()
 
   function read(): T {

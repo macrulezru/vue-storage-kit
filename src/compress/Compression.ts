@@ -1,8 +1,20 @@
+import { isDevMode } from '../core/isDevMode'
 import type { CompressOptions, CompressionAlgorithm } from '../core/types'
 
 export type { CompressOptions, CompressionAlgorithm }
 
 const MAGIC = 'vsk:'
+
+// compress() degrades silently to an uncompressed pass-through when the
+// runtime can't compress (unlike encrypt()/sign(), which fail loudly via
+// StorageEngine's reportError()) — warn once per distinct reason instead of
+// staying silent, without spamming the console on every write.
+const warnedReasons = new Set<string>()
+function warnOnce(reason: string, message: string): void {
+  if (!isDevMode() || warnedReasons.has(reason)) return
+  warnedReasons.add(reason)
+  console.warn(`[vue-storage-kit] ${message}`)
+}
 
 async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const chunks: Uint8Array[] = []
@@ -15,13 +27,24 @@ async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Ar
   const total = chunks.reduce((n, c) => n + c.length, 0)
   const out = new Uint8Array(total)
   let offset = 0
-  for (const c of chunks) { out.set(c, offset); offset += c.length }
+  for (const c of chunks) {
+    out.set(c, offset)
+    offset += c.length
+  }
   return out
 }
 
 export async function compress(data: string, opts: CompressOptions = {}): Promise<string> {
   const algorithm = opts.algorithm ?? 'gzip'
-  if (typeof CompressionStream === 'undefined') return data
+  if (typeof CompressionStream === 'undefined') {
+    warnOnce(
+      'no-compression-stream',
+      'CompressionStream is not available in this runtime — the `compress` option is being ' +
+        'ignored, data is stored uncompressed instead of failing the write (unlike `encrypt`/' +
+        '`sign`, which report an error and abort the write when unsupported).',
+    )
+    return data
+  }
 
   let stream: CompressionStream
   try {
@@ -32,6 +55,12 @@ export async function compress(data: string, opts: CompressOptions = {}): Promis
     // CompressionStream itself exists from Node 18. Degrade the same way as
     // CompressionStream being entirely unavailable: pass through
     // uncompressed rather than throwing.
+    warnOnce(
+      `unsupported-algorithm:${algorithm}`,
+      `CompressionStream does not support algorithm "${algorithm}" in this runtime — the ` +
+        '`compress` option is being ignored, data is stored uncompressed instead of failing the ' +
+        'write (unlike `encrypt`/`sign`, which report an error and abort the write when unsupported).',
+    )
     return data
   }
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { compress, decompress, isCompressed, CompressAdapter } from '../compress/Compression'
 import { MemoryStorageAdapter } from '../adapters/MemoryStorageAdapter'
 
@@ -91,5 +91,26 @@ describe('CompressAdapter', () => {
     await adapter.removeItem('a')
     expect(await adapter.getItem('a')).toBeNull()
     expect(await inner.getItem('a')).toBeNull()
+  })
+})
+
+describe('compress() silent-degrade visibility', () => {
+  it('warns once (not every call) when CompressionStream is unavailable, and still passes data through unchanged', async () => {
+    const original = globalThis.CompressionStream
+    // @ts-expect-error - simulating a runtime without CompressionStream
+    delete globalThis.CompressionStream
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const first = await compress('hello')
+      const second = await compress('world')
+      expect(first).toBe('hello')
+      expect(second).toBe('world')
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      expect(warnSpy.mock.calls[0][0]).toMatch(/CompressionStream is not available/)
+    } finally {
+      globalThis.CompressionStream = original
+      warnSpy.mockRestore()
+    }
   })
 })

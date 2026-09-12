@@ -2,6 +2,7 @@ import { StorageAdapterFactory } from '../adapters/StorageAdapterFactory'
 import { SchemaManager } from '../core/SchemaManager'
 import { TTLManager } from '../core/TTLManager'
 import { createJSONSerializer } from '../core/serializer'
+import { isDevMode } from '../core/isDevMode'
 import type {
   StorageOptions,
   StorageError,
@@ -168,6 +169,12 @@ export class StorageEngine<T> {
     this.syncOpts = options.sync ?? false
     this.debounce = options.debounce ?? 0
     this.throttle = options.throttle ?? 0
+    if (isDevMode() && this.debounce > 0 && this.throttle > 0) {
+      console.warn(
+        `[vue-storage-kit] "${key}" has both \`debounce\` and \`throttle\` set — \`throttle\` ` +
+          'wins and `debounce` is ignored entirely for this key. Set only one of the two.',
+      )
+    }
     this.historyLimit = options.history ?? 0
     this.evictOnQuota = options.evictOnQuota ?? false
     this.onErrorCb = options.onError
@@ -198,10 +205,12 @@ export class StorageEngine<T> {
     // settles can't silently skip encryption/compression/signing (see
     // loadModules()/finishInit() below).
     this.modulesReady = this.loadModules()
-    this.ready = this.modulesReady.then(() => this.finishInit()).catch((e: unknown) => {
-      this.reportError({ type: 'parse-error', key: this.key, raw: String(e) })
-      this.patchSnapshot({ isReady: true })
-    })
+    this.ready = this.modulesReady
+      .then(() => this.finishInit())
+      .catch((e: unknown) => {
+        this.reportError({ type: 'parse-error', key: this.key, raw: String(e) })
+        this.patchSnapshot({ isReady: true })
+      })
   }
 
   // ─── External-store surface ────────────────────────────────────────────────
