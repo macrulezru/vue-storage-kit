@@ -38,9 +38,7 @@ describe('useStorage', () => {
   })
 
   it('persists a value to storage', async () => {
-    const { value } = withScope(() =>
-      useStorage('key', { defaultValue: '', target: 'memory' }),
-    )
+    const { value } = withScope(() => useStorage('key', { defaultValue: '', target: 'memory' }))
     // Wait for init
     await nextTick()
     await nextTick()
@@ -267,6 +265,46 @@ describe('useStorage', () => {
   it('useLocalStorage is a shortcut for target: local', () => {
     const { value } = withScope(() => useLocalStorage('k', 99))
     expect(value.value).toBe(99)
+  })
+})
+
+describe('useStorage — shared-instance options mismatch warning', () => {
+  it('warns in dev mode when a second caller for the same key+target passes different options', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    withScope(() => useStorage('shared-key', { defaultValue: 'a', target: 'memory', ttl: 1000 }))
+    withScope(() => useStorage('shared-key', { defaultValue: 'a', target: 'memory', ttl: 2000 }))
+
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy.mock.calls[0][0]).toMatch(/already active with a different set of options/)
+
+    warnSpy.mockRestore()
+  })
+
+  it('does not warn when a second caller passes matching options', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    withScope(() => useStorage('shared-key-2', { defaultValue: 'a', target: 'memory', ttl: 1000 }))
+    withScope(() => useStorage('shared-key-2', { defaultValue: 'a', target: 'memory', ttl: 1000 }))
+
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
+  })
+
+  it("the first caller's instance wins regardless — the mismatched second call still shares it", () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const first = withScope(() =>
+      useStorage('shared-key-3', { defaultValue: 'first', target: 'memory' }),
+    )
+    const second = withScope(() =>
+      useStorage('shared-key-3', { defaultValue: 'second', target: 'memory' }),
+    )
+
+    expect(second).toBe(first)
+
+    warnSpy.mockRestore()
   })
 })
 

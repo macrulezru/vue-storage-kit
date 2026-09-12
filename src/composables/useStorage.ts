@@ -10,6 +10,7 @@ import {
 } from 'vue'
 import { acquireEngine, releaseEngine, cacheKey } from '../engine/engineCache'
 import { getGlobalOptions } from '../plugin'
+import { isDevMode } from '../core/isDevMode'
 import type { StorageOptions, StorageError, Serializer } from '../core/types'
 
 export interface UseStorageReturn<T> {
@@ -34,10 +35,7 @@ export interface StorageKeyDef<T> {
   _options: StorageOptions<T>
 }
 
-export function defineStorageKey<T>(
-  key: string,
-  options: StorageOptions<T>,
-): StorageKeyDef<T> {
+export function defineStorageKey<T>(key: string, options: StorageOptions<T>): StorageKeyDef<T> {
   return { _key: key, _options: options }
 }
 
@@ -57,9 +55,34 @@ interface WrapperCacheEntry {
   result: UseStorageReturn<any>
   refCount: number
   scope: ReturnType<typeof effectScope>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  options: StorageOptions<any>
 }
 
 const wrapperCache = new Map<string, WrapperCacheEntry>()
+
+// Options that are meaningfully comparable across callers (JSON-safe —
+// functions like onError/onExpire/onMigrate and non-serializable values
+// like an EncryptOptions.key CryptoKey are skipped rather than compared,
+// so this is a best-effort heuristic, not a strict equality check).
+const COMPARABLE_OPTION_KEYS = [
+  'ttl',
+  'version',
+  'encrypt',
+  'compress',
+  'sign',
+  'sync',
+  'debounce',
+  'throttle',
+  'history',
+  'evictOnQuota',
+  'defaultValue',
+] as const
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function optionsDiffer(a: StorageOptions<any>, b: StorageOptions<any>): boolean {
+  return COMPARABLE_OPTION_KEYS.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]))
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -77,6 +100,15 @@ export function useStorage<T>(
   // Return cached instance if available
   const existing = wrapperCache.get(ck)
   if (existing) {
+    if (isDevMode() && optionsDiffer(existing.options, resolvedOpts)) {
+      console.warn(
+        `[vue-storage-kit] useStorage("${key}") is already active with a different set of ` +
+          `options — this call's options are being ignored, and the first caller's live ` +
+          `instance (and its options) is returned instead. Every useStorage() call sharing the ` +
+          `same key+target reuses the same instance; pass matching options everywhere, or use a ` +
+          `distinct key if these should really be independent.`,
+      )
+    }
     existing.refCount++
     _registerDispose(ck)
     return existing.result as UseStorageReturn<T>
@@ -89,7 +121,7 @@ export function useStorage<T>(
     result = _wrapEngine(key, resolvedOpts)
   })
 
-  wrapperCache.set(ck, { result, refCount: 1, scope })
+  wrapperCache.set(ck, { result, refCount: 1, scope, options: resolvedOpts })
   _registerDispose(ck)
   return result
 }

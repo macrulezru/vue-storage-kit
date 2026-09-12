@@ -29,7 +29,10 @@ function flush(ms = 10): Promise<void> {
 // import() resolves, and a cold import (first use, mid-transform under the
 // full suite's load) can take longer than a fixed guess safely covers on
 // some runtimes (observed on Node 18 specifically).
-async function waitForWrite(getRaw: () => Promise<string | null>, timeoutMs = 3000): Promise<string> {
+async function waitForWrite(
+  getRaw: () => Promise<string | null>,
+  timeoutMs = 3000,
+): Promise<string> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     const raw = await getRaw()
@@ -149,7 +152,10 @@ describe('StorageEngine — migrations', () => {
       version: 2,
       onMigrate,
       migrations: [
-        { version: 2, up: (d) => ({ theme: (d as { darkMode?: boolean }).darkMode ? 'dark' : 'light' }) },
+        {
+          version: 2,
+          up: (d) => ({ theme: (d as { darkMode?: boolean }).darkMode ? 'dark' : 'light' }),
+        },
       ],
     })
     await engine.ready
@@ -175,7 +181,10 @@ describe('StorageEngine — migrations', () => {
       target: 'memory',
       version: 2,
       migrations: [
-        { version: 2, up: (d) => ({ theme: (d as { darkMode?: boolean }).darkMode ? 'dark' : 'light' }) },
+        {
+          version: 2,
+          up: (d) => ({ theme: (d as { darkMode?: boolean }).darkMode ? 'dark' : 'light' }),
+        },
       ],
     })
     await engine.ready
@@ -525,7 +534,10 @@ describe('StorageEngine — quota-exceeded recovery', () => {
     await waitForWrite(() => adapter.getItem('old-encrypted'))
     oldEncryptedEngine.dispose()
 
-    await adapter.setItem('newer-key', JSON.stringify({ v: 1, d: '"y"', exp: null, ts: Date.now() + 100_000 }))
+    await adapter.setItem(
+      'newer-key',
+      JSON.stringify({ v: 1, d: '"y"', exp: null, ts: Date.now() + 100_000 }),
+    )
 
     const original = adapter.setItem.bind(adapter)
     let calls = 0
@@ -693,11 +705,7 @@ describe('StorageEngine — sync update racing the initial read', () => {
       resolveSubscribed = resolve
     })
     const originalSubscribe = TabSync.prototype.subscribe
-    vi.spyOn(TabSync.prototype, 'subscribe').mockImplementation(function (
-      this: TabSync,
-      key,
-      cb,
-    ) {
+    vi.spyOn(TabSync.prototype, 'subscribe').mockImplementation(function (this: TabSync, key, cb) {
       originalSubscribe.call(this, key, cb)
       resolveSubscribed()
     })
@@ -750,11 +758,7 @@ describe('StorageEngine — sync update racing the initial read', () => {
     const subscribed = new Promise<void>((resolve) => {
       resolveSubscribed = resolve
     })
-    vi.spyOn(TabSync.prototype, 'subscribe').mockImplementation(function (
-      this: TabSync,
-      _key,
-      cb,
-    ) {
+    vi.spyOn(TabSync.prototype, 'subscribe').mockImplementation(function (this: TabSync, _key, cb) {
       engineCallback = cb
       resolveSubscribed()
     })
@@ -849,6 +853,40 @@ describe('StorageEngine — sync update racing the initial read', () => {
     await flush(20)
 
     expect(engine.getSnapshot().value).toBe('fresh-from-disk')
+    engine.dispose()
+  })
+})
+
+describe('debounce + throttle both set', () => {
+  it('warns in dev mode — throttle silently wins, debounce is ignored entirely', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const engine = new StorageEngine('both-set-key', {
+      defaultValue: 'default',
+      target: 'memory',
+      debounce: 100,
+      throttle: 50,
+    })
+
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy.mock.calls[0][0]).toMatch(/both `debounce` and `throttle`/)
+
+    warnSpy.mockRestore()
+    engine.dispose()
+  })
+
+  it('does not warn when only one of the two is set', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const engine = new StorageEngine('debounce-only-key', {
+      defaultValue: 'default',
+      target: 'memory',
+      debounce: 100,
+    })
+
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
     engine.dispose()
   })
 })
